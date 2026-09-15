@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { isKeyRelease, matchesKey, type AutocompleteItem, type Component, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
+import { Key, isKeyRelease, matchesKey, type AutocompleteItem, type Component, type KeyId, type OverlayHandle, type TUI } from "@earendil-works/pi-tui";
 import { completePath, resolvePath } from "./paths.ts";
 import { safeText } from "./documents.ts";
 import { PreviewViewer } from "./viewer.ts";
@@ -32,6 +32,13 @@ function closeOwned(tui: TUI, handle: OverlayHandle | undefined, done: () => voi
 }
 
 export default function piView(pi: ExtensionAPI): void {
+  const shortcut = (process.env.PI_VIEW_SHORTCUT?.trim().toLowerCase() || (process.platform === "win32" ? "ctrl+p" : "super+p")) as KeyId;
+  const modifiers = shortcut.split("+");
+  const key = modifiers.pop()!;
+  if (modifiers.some(modifier => !["ctrl", "alt", "shift", "super"].includes(modifier))
+    || !(/^[a-z0-9]$/.test(key) || Object.values(Key).some(value => typeof value === "string" && value.toLowerCase() === key))) {
+    throw new Error(`Invalid PI_VIEW_SHORTCUT "${safeText(shortcut)}"; use a key such as ctrl+alt+p.`);
+  }
   let cwd = process.cwd();
   let quickPending = false;
   let providerInstalled = false;
@@ -121,10 +128,10 @@ export default function piView(pi: ExtensionAPI): void {
     closeQuick?.();
     detachShortcut?.();
     if (!ctx.hasUI) return;
-    // Registered shortcuts are editor-scoped in Pi. The raw hook also works
-    // over previews and other dialogs, without replacing their input handlers.
+    // One global hook covers the editor and overlays. Editor-only shortcut
+    // registration is redundant and rejects reserved chords such as Ctrl+P.
     detachShortcut = ctx.ui.onTerminalInput(data => {
-      if (!matchesKey(data, "super+p")) return;
+      if (!matchesKey(data, shortcut)) return;
       if (!isKeyRelease(data)) void showQuick(ctx).catch(error => ctx.ui.notify(safeText((error as Error).message), "error"));
       return { consume: true };
     });
@@ -149,10 +156,6 @@ export default function piView(pi: ExtensionAPI): void {
     }
   });
   pi.on("session_shutdown", () => { lifetime++; detachShortcut?.(); closeQuick?.(); closePreview?.(); stopImageWorker(); });
-  pi.registerShortcut("super+p", {
-    description: "Quick Open: recent session files and path completion",
-    handler: ctx => showQuick(ctx).catch(error => ctx.ui.notify(safeText((error as Error).message), "error")),
-  });
 
   for (const name of ["view", "v"]) {
     pi.registerCommand(name, {

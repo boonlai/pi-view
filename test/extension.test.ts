@@ -45,7 +45,7 @@ function foreignOverlay(): ForeignOverlay {
   return { focused: false, received: [], render: () => [], invalidate() {}, handleInput(data: string) { this.received.push(data); } };
 }
 
-async function host(t: { after(fn: () => void | Promise<void>): void }) {
+async function host(t: { after(fn: () => void | Promise<void>): void }, init?: (pi: ExtensionAPI) => void) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-view-extension-"));
   const events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void>; getArgumentCompletions(args: string): unknown }>();
@@ -54,11 +54,10 @@ async function host(t: { after(fn: () => void | Promise<void>): void }) {
   tui.start();
   // Input flows through the public terminal.start callback wired by tui.start().
   const send = (data: string) => term.onInput?.(data);
-  const shortcuts = new Map<string, unknown>();
   const entries: unknown[] = [];
   const listeners = new Set<(data: string) => { consume?: boolean; data?: string } | undefined>();
   const providerFactory: ((current: AutocompleteProvider) => AutocompleteProvider)[] = [];
-  const fire = (name: string) => events.get(name)!({}, context);
+  const fire = (name: string) => events.get(name)?.({}, context);
   const context = {
     cwd, hasUI: true, sessionManager: { getBranch: () => entries },
     ui: {
@@ -75,18 +74,21 @@ async function host(t: { after(fn: () => void | Promise<void>): void }) {
   const pi = {
     on(name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) { events.set(name, callback); },
     registerCommand(name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void>; getArgumentCompletions(args: string): unknown }) { commands.set(name, command); },
-    registerShortcut(name: string, shortcut: unknown) { shortcuts.set(name, shortcut); },
     appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
   } as unknown as ExtensionAPI;
-  piView(pi);
-  fire("session_start");
   t.after(async () => {
     fire("session_shutdown");
     tui.stop();
     await rm(cwd, { recursive: true, force: true });
   });
+  if (init) init(pi);
+  // The stock Super+P suite stays deterministic on any machine: pin a
+  // non-Windows default and ignore ambient PI_VIEW_SHORTCUT, scoped to the
+  // synchronous init that captures the chord.
+  else withEnv({ shortcut: undefined, platform: process.platform === "win32" ? "darwin" : undefined }, () => piView(pi));
+  fire("session_start");
   return {
-    cwd, context, commands, shortcuts, entries, listeners, tui, send, fire,
+    cwd, context, commands, entries, listeners, tui, send, fire,
     focused: () => tui.getFocusedComponent(),
     hasOverlay: () => tui.hasOverlay(),
     provider: () => providerFactory[0],
@@ -96,6 +98,25 @@ async function host(t: { after(fn: () => void | Promise<void>): void }) {
 async function until(predicate: () => boolean): Promise<void> {
   for (let i = 0; i < 100 && !predicate(); i++) await delay(10);
   assert.ok(predicate());
+}
+
+// Chord configuration is captured during the synchronous piView(pi) init, so
+// PI_VIEW_SHORTCUT and process.platform only need to span that call; both are
+// restored even when the callback throws. Nothing is re-imported while the
+// platform is mocked, keeping native Node path semantics for real file I/O.
+function withEnv<T>(values: { shortcut?: string; platform?: NodeJS.Platform }, fn: () => T): T {
+  const previousShortcut = process.env.PI_VIEW_SHORTCUT;
+  const previousPlatform = process.platform;
+  try {
+    if (values.shortcut === undefined) delete process.env.PI_VIEW_SHORTCUT;
+    else process.env.PI_VIEW_SHORTCUT = values.shortcut;
+    if (values.platform) Object.defineProperty(process, "platform", { value: values.platform });
+    return fn();
+  } finally {
+    if (previousShortcut === undefined) delete process.env.PI_VIEW_SHORTCUT;
+    else process.env.PI_VIEW_SHORTCUT = previousShortcut;
+    if (values.platform) Object.defineProperty(process, "platform", { value: previousPlatform });
+  }
 }
 
 test("Both empty commands open Quick Open, and Cmd+P layers it over a preview", async t => {
@@ -128,6 +149,61 @@ test("Both empty commands open Quick Open, and Cmd+P layers it over a preview", 
   await until(() => !app.hasOverlay());
   assert.equal(app.focused(), null);
   await pending;
+});
+
+test("Configured PI_VIEW_SHORTCUT replaces Super+P standalone, above overlays, and leaves releases inert", async t => {
+  const app = await host(t, pi => withEnv({ shortcut: "  Ctrl+Alt+P  " }, () => piView(pi)));
+  // Releases match the configured chord and are consumed, but open nothing.
+  let consumed = false;
+  for (const listener of app.listeners) if (listener("\x1b[112;7:3u")?.consume) { consumed = true; break; }
+  assert.ok(consumed);
+  await delay(30);
+  assert.equal(app.hasOverlay(), false);
+  // Standalone press opens Quick Open; Esc returns to the bare editor.
+  app.send("\x1b[112;7u");
+  await until(() => app.focused() instanceof QuickOpen);
+  app.send("\x1b");
+  await until(() => !app.hasOverlay());
+  // Above a preview and a foreign dialog the configured chord layers Quick
+  // Open on top, and closing it hands focus back to the foreign overlay,
+  // while the retired Super+P default no longer opens it anywhere.
+  const path = join(app.cwd, "code.ts"); await writeFile(path, "const preview = true;");
+  app.commands.get("view")!.handler(path, app.context);
+  await until(() => app.focused() instanceof PreviewViewer);
+  const foreign = foreignOverlay();
+  app.tui.showOverlay(foreign);
+  await until(() => app.focused() === foreign);
+  app.send("\x1b[112;9u");
+  await delay(30);
+  assert.equal(app.focused(), foreign);
+  app.send("\x1b[112;7u");
+  await until(() => app.focused() instanceof QuickOpen);
+  app.send("\x1b");
+  await until(() => app.focused() === foreign);
+});
+
+test("Windows defaults to Ctrl+P for both legacy and Kitty input encodings", async t => {
+  const app = await host(t, pi => withEnv({ shortcut: undefined, platform: "win32" }, () => piView(pi)));
+  // Legacy terminals deliver Ctrl+P as the raw 0x10 byte.
+  app.send("\x10");
+  await until(() => app.focused() instanceof QuickOpen);
+  app.send("\x1b");
+  await until(() => !app.hasOverlay());
+  // Kitty-protocol Ctrl+P opens; its release is consumed without reopening.
+  let consumed = false;
+  for (const listener of app.listeners) if (listener("\x1b[112;5:3u")?.consume) { consumed = true; break; }
+  assert.ok(consumed);
+  await delay(30);
+  assert.equal(app.hasOverlay(), false);
+  app.send("\x1b[112;5u");
+  await until(() => app.focused() instanceof QuickOpen);
+  app.send("\x1b");
+  await until(() => !app.hasOverlay());
+});
+
+test("Misspelled PI_VIEW_SHORTCUT modifier fails init instead of swallowing plain letters", () => {
+  withEnv({ shortcut: "ctil+p" }, () =>
+    assert.throws(() => piView({} as ExtensionAPI), /Invalid PI_VIEW_SHORTCUT/));
 });
 
 test("Overlapping /view requests mount exactly one preview", async t => {

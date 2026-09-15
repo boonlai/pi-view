@@ -1,5 +1,5 @@
 // src/index.ts
-import { isKeyRelease as isKeyRelease2, matchesKey as matchesKey3 } from "@earendil-works/pi-tui";
+import { Key, isKeyRelease as isKeyRelease2, matchesKey as matchesKey3 } from "@earendil-works/pi-tui";
 
 // src/paths.ts
 import { opendirSync, statSync } from "node:fs";
@@ -2207,7 +2207,7 @@ var HELP = `pi-view \u2014 local previews; nothing is sent to the model
 
 /view <path> or /v <path>    Tab completes files and directories
 /view or /v                Quick Open: recent session files and paths
-Cmd+P                     Quick Open above any dialog (if forwarded)
+Cmd+P / Ctrl+P on Windows   Quick Open above any dialog (if forwarded)
 /view --diagnostics        Terminal capabilities and PDF dependencies
 
 Esc / Ctrl+C               Close and restore the agent UI
@@ -2235,6 +2235,7 @@ Images are bounded to 4096px per side; actual size uses that raster.
 PDF requires Poppler. Scans have no searchable text without OCR.
 No HTML/webpages, animation, JavaScript or automatic remote fetching.
 Quick Open: arrows select, Tab completes, Enter opens; Esc clears then closes.
+PI_VIEW_SHORTCUT overrides Quick Open (for example: ctrl+alt+p).
 Ghostty forwarding if needed: keybind = super+p=csi:112;9u
 PI_VIEW_IMAGES=off forces text/path fallbacks.
 Mouse support depends on the terminal; keyboard controls always work.`;
@@ -3352,6 +3353,12 @@ function closeOwned(tui, handle, done) {
   }
 }
 function piView(pi) {
+  const shortcut = process.env.PI_VIEW_SHORTCUT?.trim().toLowerCase() || (process.platform === "win32" ? "ctrl+p" : "super+p");
+  const modifiers = shortcut.split("+");
+  const key = modifiers.pop();
+  if (modifiers.some((modifier) => !["ctrl", "alt", "shift", "super"].includes(modifier)) || !(/^[a-z0-9]$/.test(key) || Object.values(Key).some((value) => typeof value === "string" && value.toLowerCase() === key))) {
+    throw new Error(`Invalid PI_VIEW_SHORTCUT "${safeText(shortcut)}"; use a key such as ctrl+alt+p.`);
+  }
   let cwd = process.cwd();
   let quickPending = false;
   let providerInstalled = false;
@@ -3442,7 +3449,7 @@ function piView(pi) {
     detachShortcut?.();
     if (!ctx.hasUI) return;
     detachShortcut = ctx.ui.onTerminalInput((data) => {
-      if (!matchesKey3(data, "super+p")) return;
+      if (!matchesKey3(data, shortcut)) return;
       if (!isKeyRelease2(data)) void showQuick(ctx).catch((error) => ctx.ui.notify(safeText(error.message), "error"));
       return { consume: true };
     });
@@ -3469,10 +3476,6 @@ function piView(pi) {
     closeQuick?.();
     closePreview?.();
     stopImageWorker();
-  });
-  pi.registerShortcut("super+p", {
-    description: "Quick Open: recent session files and path completion",
-    handler: (ctx) => showQuick(ctx).catch((error) => ctx.ui.notify(safeText(error.message), "error"))
   });
   for (const name of ["view", "v"]) {
     pi.registerCommand(name, {

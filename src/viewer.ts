@@ -52,7 +52,7 @@ const HELP = `pi-view — local previews; nothing is sent to the model
 
 /view <path> or /v <path>    Tab completes files and directories
 /view or /v                Quick Open: recent session files and paths
-Cmd+P                     Quick Open above any dialog (if forwarded)
+Cmd+P / Ctrl+P on Windows   Quick Open above any dialog (if forwarded)
 /view --diagnostics        Terminal capabilities and PDF dependencies
 
 Esc / Ctrl+C               Close and restore the agent UI
@@ -80,6 +80,7 @@ Images are bounded to 4096px per side; actual size uses that raster.
 PDF requires Poppler. Scans have no searchable text without OCR.
 No HTML/webpages, animation, JavaScript or automatic remote fetching.
 Quick Open: arrows select, Tab completes, Enter opens; Esc clears then closes.
+PI_VIEW_SHORTCUT overrides Quick Open (for example: ctrl+alt+p).
 Ghostty forwarding if needed: keybind = super+p=csi:112;9u
 PI_VIEW_IMAGES=off forces text/path fallbacks.
 Mouse support depends on the terminal; keyboard controls always work.`;
