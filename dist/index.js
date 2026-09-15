@@ -2275,6 +2275,8 @@ var PreviewViewer = class {
   numbers = false;
   source = false;
   page = 1;
+  pageWheelAt = 0;
+  pageWheelDirection = 0;
   pdfSource;
   pdfTextLoading;
   focusImage;
@@ -2437,7 +2439,14 @@ var PreviewViewer = class {
   wheel(delta) {
     if (this.closed || this.inputMode || this.remotePrompt || !delta) return;
     if (this.imageMode()) {
-      if (this.document?.kind === "pdf") this.setPage(this.page + Math.sign(delta));
+      if (this.document?.kind === "pdf") {
+        const direction = Math.sign(delta);
+        const now = performance.now();
+        if (direction === this.pageWheelDirection && now - this.pageWheelAt < 200) return;
+        this.pageWheelAt = now;
+        this.pageWheelDirection = direction;
+        this.setPage(this.page + direction);
+      }
       return;
     }
     if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));

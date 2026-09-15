@@ -466,24 +466,42 @@ test("Wheel leaves a focused Markdown image fit while plus zooms it", { timeout:
 test("Wheel pages and clamps a multi-page PDF while zoom and arrows keep working", { timeout: 120_000 }, async t => {
   const diagnostic = await mediaDiagnostics();
   if (diagnostic.filter(line => /^(pdfinfo|pdftoppm|pdftotext): available$/.test(line)).length < 3) { t.skip("Poppler is not installed"); return; }
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
   const { viewer, writes, listeners } = await setup(t, "book.pdf", multiPagePdf(["Red", "Green", "Blue"]), { images: true });
   const page = (rendered: string): string => stripVTControlCharacters(rendered).match(/page \d\/3/)?.[0] ?? "";
   const first = await rawScreen(viewer, rendered => page(rendered) === "page 1/3" && frameIds(rendered).length > 0);
   const firstId = frameIds(first)[0];
 
-  wheel(listeners, "down");
-  assert.equal(page(rawRender(viewer)), "page 2/3");
+  wheel(listeners, "down"); wheel(listeners, "down"); wheel(listeners, "down");
+  assert.equal(page(rawRender(viewer)), "page 2/3"); // one notch can emit several reports
   viewer.handleInput("+");
   assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.20/);
+  now += 199;
+  wheel(listeners, "down");
+  assert.equal(page(rawRender(viewer)), "page 2/3");
+  assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.20/);
+  now++;
   wheel(listeners, "down");
   assert.equal(page(rawRender(viewer)), "page 3/3");
   assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.00/); // paging resets to fit
   wheel(listeners, "down");
   assert.equal(page(rawRender(viewer)), "page 3/3"); // clamped at the last page
-  wheel(listeners, "up"); wheel(listeners, "up"); wheel(listeners, "up");
+  wheel(listeners, "up"); // reversing direction is immediately responsive
+  assert.equal(page(rawRender(viewer)), "page 2/3");
+  wheel(listeners, "up");
+  assert.equal(page(rawRender(viewer)), "page 2/3");
+  now += 200;
+  wheel(listeners, "up");
+  now += 200;
+  wheel(listeners, "up");
   assert.equal(page(rawRender(viewer)), "page 1/3"); // clamped at the first page
 
   wheel(listeners, "down");
+  viewer.handleInput("]");
+  assert.equal(page(rawRender(viewer)), "page 3/3"); // keyboard navigation bypasses wheel pacing
+  viewer.handleInput("[");
+  assert.equal(page(rawRender(viewer)), "page 2/3");
   const second = await rawScreen(viewer, rendered => page(rendered) === "page 2/3" && frameIds(rendered).length > 0 && !frameIds(rendered).includes(firstId));
   const secondId = frameIds(second)[0];
   assert.ok(deletedIds(writes).includes(firstId)); // the paged-away placement is released
@@ -496,6 +514,7 @@ test("Wheel pages and clamps a multi-page PDF while zoom and arrows keep working
   const panned = await rawScreen(viewer, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(zoomId));
   assert.doesNotMatch(panned, /— loading/);
   assert.notDeepEqual(await framePixels(panned), await framePixels(zoomed));
+  now += 200;
   wheel(listeners, "down");
   assert.equal(page(rawRender(viewer)), "page 3/3"); // wheel pages while panned, never zooms
 });

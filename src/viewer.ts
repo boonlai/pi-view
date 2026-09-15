@@ -105,6 +105,8 @@ export class PreviewViewer implements Component {
   private numbers = false;
   private source = false;
   private page = 1;
+  private pageWheelAt = 0;
+  private pageWheelDirection = 0;
   private pdfSource?: string;
   private pdfTextLoading?: AbortController;
   private focusImage?: string;
@@ -255,7 +257,15 @@ export class PreviewViewer implements Component {
   wheel(delta: number): void {
     if (this.closed || this.inputMode || this.remotePrompt || !delta) return;
     if (this.imageMode()) {
-      if (this.document?.kind === "pdf") this.setPage(this.page + Math.sign(delta));
+      if (this.document?.kind === "pdf") {
+        const direction = Math.sign(delta);
+        const now = performance.now();
+        // Terminals can emit several wheel reports for a single notch.
+        if (direction === this.pageWheelDirection && now - this.pageWheelAt < 200) return;
+        this.pageWheelAt = now;
+        this.pageWheelDirection = direction;
+        this.setPage(this.page + direction);
+      }
       return;
     }
     if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
