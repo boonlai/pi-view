@@ -8,6 +8,9 @@ import { QuickOpen } from "./quick-open.ts";
 import { recentFiles } from "./recents.ts";
 import { stopImageWorker } from "./image-client.ts";
 
+// OMP owns the alternate buffer and mouse modes; Pi ignores this extra option.
+const fullscreen = { fullscreen: true };
+
 export default function piView(pi: ExtensionAPI): void {
   let cwd = process.cwd();
   let closePreview: (() => void) | undefined;
@@ -39,7 +42,7 @@ export default function piView(pi: ExtensionAPI): void {
         viewer = new PreviewViewer(tui, theme, localClose, path, initial);
         closePreview = localClose;
         return viewer;
-      }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left", row: 0, col: 0 } });
+      }, { overlay: true, overlayOptions: { ...fullscreen, width: "100%", maxHeight: "100%", anchor: "top-left", row: 0, col: 0 } });
     } finally {
       viewer?.dispose();
       if (closePreview === localClose) closePreview = undefined;
@@ -61,7 +64,7 @@ export default function piView(pi: ExtensionAPI): void {
         closeQuick = () => finish();
         quick = new QuickOpen(tui, theme, ctx.cwd, recentFiles(ctx.sessionManager.getBranch(), ctx.cwd), finish);
         return quick;
-      }, { overlay: true, overlayOptions: { width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 } });
+      }, { overlay: true, overlayOptions: { ...fullscreen, width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 } });
     } finally { quick?.dispose(); closeQuick = undefined; quickPending = false; }
     if (picked) await showPreview(ctx, picked);
   }

@@ -432,8 +432,8 @@ function parseMouseStream(
  * listener (identical behavior on Pi and OMP; the normalized `handleMouse`
  * dispatch is not portable between hosts).
  *
- * - Queries mode state before changing it. Existing fullscreen mouse tracking
- *   is preserved, and only modes changed by this overlay are restored.
+ * - OMP owns mouse modes through its fullscreen overlays. Pi queries mode state
+ *   before changing it, and only modes changed by this overlay are restored.
  * - Without probe support, leaves terminal modes untouched (keyboard fallback).
  * - Wheel packets invoke `onWheel(delta)` (logical lines, negative = up);
  *   press/release/motion packets are consumed as noise; every other byte
@@ -443,7 +443,9 @@ function parseMouseStream(
  */
 export function attachMouse(tui: TUI, onWheel: (delta: number) => void): () => void {
   if (typeof tui.addInputListener !== "function") return () => {};
-  const timeout = probeTimeoutMs(process.env);
+  // OMP consumes DECRPM replies before raw listeners; its TUI owns the modes.
+  const hostOwnsMouse = ompTerminal() !== undefined;
+  const timeout = hostOwnsMouse ? 0 : probeTimeoutMs(process.env);
   const state: StreamState = { probing: timeout > 0, pendingModes: new Set(PROBED_MODES), held: "" };
   const originalModes = new Map<number, number>();
   const changedModes: number[] = [];
@@ -480,7 +482,7 @@ export function attachMouse(tui: TUI, onWheel: (delta: number) => void): () => v
     writeRaw(tui, MOUSE_QUERY);
     timer = setTimeout(() => { state.probing = false; state.held = ""; }, timeout);
     timer.unref();
-  } else {
+  } else if (!hostOwnsMouse) {
     // Explicit opt-out for terminals without DECRQM; assumes modes were off.
     changedModes.push(1000, 1006);
     writeRaw(tui, MOUSE_ENABLE);

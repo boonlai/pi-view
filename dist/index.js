@@ -2016,7 +2016,8 @@ function parseMouseStream(buffer, state) {
 function attachMouse(tui, onWheel) {
   if (typeof tui.addInputListener !== "function") return () => {
   };
-  const timeout = probeTimeoutMs(process.env);
+  const hostOwnsMouse = ompTerminal() !== void 0;
+  const timeout = hostOwnsMouse ? 0 : probeTimeoutMs(process.env);
   const state = { probing: timeout > 0, pendingModes: new Set(PROBED_MODES), held: "" };
   const originalModes = /* @__PURE__ */ new Map();
   const changedModes = [];
@@ -2053,7 +2054,7 @@ function attachMouse(tui, onWheel) {
       state.held = "";
     }, timeout);
     timer.unref();
-  } else {
+  } else if (!hostOwnsMouse) {
     changedModes.push(1e3, 1006);
     writeRaw(tui, MOUSE_ENABLE);
   }
@@ -3031,6 +3032,7 @@ async function recentFiles(entries, cwd) {
 }
 
 // src/index.ts
+var fullscreen = { fullscreen: true };
 function piView(pi) {
   let cwd = process.cwd();
   let closePreview;
@@ -3062,7 +3064,7 @@ function piView(pi) {
         viewer = new PreviewViewer(tui, theme, localClose, path3, initial);
         closePreview = localClose;
         return viewer;
-      }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left", row: 0, col: 0 } });
+      }, { overlay: true, overlayOptions: { ...fullscreen, width: "100%", maxHeight: "100%", anchor: "top-left", row: 0, col: 0 } });
     } finally {
       viewer?.dispose();
       if (closePreview === localClose) closePreview = void 0;
@@ -3086,7 +3088,7 @@ function piView(pi) {
         closeQuick = () => finish();
         quick = new QuickOpen(tui, theme, ctx.cwd, recentFiles(ctx.sessionManager.getBranch(), ctx.cwd), finish);
         return quick;
-      }, { overlay: true, overlayOptions: { width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 } });
+      }, { overlay: true, overlayOptions: { ...fullscreen, width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 } });
     } finally {
       quick?.dispose();
       closeQuick = void 0;
