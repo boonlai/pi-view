@@ -153,7 +153,7 @@ export class QuickOpen implements Component {
       this.theme.fg(this.message ? "error" : "dim", footer.replace(/[\n\t]/g, " ")),
       this.theme.fg("borderAccent", `╰${"─".repeat(Math.max(0, width - 2))}╯`),
     ];
-    return lines.map((line, index) => index === 0 || index === lines.length - 1
-      ? truncateToWidth(line, width, "") : truncateToWidth(`  ${line}`, width, ""));
+    return lines.map((line, index) => this.theme.bg("customMessageBg",
+      truncateToWidth(index === 0 || index === lines.length - 1 ? line : `  ${line}`, width, "", true)));
   }
 }

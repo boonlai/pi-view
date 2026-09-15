@@ -146,6 +146,8 @@ test("kitty path renders exact cell geometry with host-tracked metadata", () => 
     assert.equal(lines.length, 2);
     assert.match(lines[0], /^\x1b_Ga=T,[^;]*\bc=4[,;]/);
     assert.match(lines[0], /^\x1b_Ga=T,[^;]*\br=2[,;]/);
+    const layer = Number(/\bz=(-?\d+)[,;]/.exec(lines[0])?.[1]);
+    assert.ok(layer < -(2 ** 30), "Kitty images must sit below opaque modal cell backgrounds");
     img.dispose();
   });
 });

@@ -248,6 +248,30 @@ test("Raster viewport crops at row boundaries and pans actual pixels without ove
   await assert.rejects(renderRaster(image, { ...options, widthPx: 99999 }), /size limit/);
 });
 
+test("Crop bands separate transparent letterbox rows from partial content rows", async t => {
+  const dir = await fixture(t);
+  const file = join(dir, "band.png");
+  await sharp({ create: { width: 8, height: 4, channels: 3, background: "red" } }).png().toFile(file);
+  const image = await loadImage(file, dir, false);
+  // Fit of 8x4 into 8x8 leaves two transparent letterbox rows above and below
+  // the four content rows; every band therefore exercises the same pipeline.
+  const rows = async (cropTopPx: number, cropHeightPx: number): Promise<string[]> => {
+    const png = await renderRaster(image, { widthPx: 8, heightPx: 8, zoom: 1, panX: 0.5, panY: 0.5, cropTopPx, cropHeightPx });
+    const raw = await sharp(png).ensureAlpha().raw().toBuffer();
+    return Array.from({ length: raw.length / 32 }, (_, row) => {
+      const pixels = raw.subarray(row * 32, (row + 1) * 32);
+      const blank = pixels.every(byte => byte === 0);
+      const red = [...pixels].every((byte, index) => index % 4 === 3 ? byte === 255 : byte === (index % 4 === 0 ? 255 : 0));
+      return blank ? "blank" : red ? "content" : "mixed";
+    });
+  };
+  assert.deepEqual(await rows(0, 2), ["blank", "blank"]); // band entirely above the content
+  assert.deepEqual(await rows(6, 2), ["blank", "blank"]); // band entirely below the content
+  assert.deepEqual(await rows(1, 3), ["blank", "content", "content"]); // leading letterbox row
+  assert.deepEqual(await rows(5, 3), ["content", "blank", "blank"]); // trailing letterbox rows
+  assert.deepEqual(await rows(0, 8), ["blank", "blank", "content", "content", "content", "content", "blank", "blank"]);
+});
+
 test("PDF renders a real page and extracts searchable text", async t => {
   const diagnostic = await mediaDiagnostics();
   if (diagnostic.filter(line => /^(pdfinfo|pdftoppm|pdftotext): available$/.test(line)).length < 3) { t.skip("Poppler is not installed"); return; }

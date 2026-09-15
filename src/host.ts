@@ -280,8 +280,9 @@ export function createTerminalImage(
       ownedLines = lines.map(line => line.replace(/\x1b_G([^;]*);/g, (sequence, header: string) => {
         const fields = header.split(",");
         if (!fields.some(field => field === "a=T" || field === "a=t" || field === "a=p")) return sequence;
-        if (fields.includes(`i=${imageId}`)) return sequence; // Keep Pi's registered metadata unchanged.
-        return `\x1b_G${fields.filter(field => !field.startsWith("i=")).join(",")},i=${imageId};`;
+        // Negative enough to sit below explicit cell backgrounds: an opaque
+        // modal can cover the image while surrounding default cells retain it.
+        return `\x1b_G${fields.filter(field => !field.startsWith("i=") && !field.startsWith("z=")).join(",")},i=${imageId},z=-1073741825;`;
       }));
       return ownedLines;
     },

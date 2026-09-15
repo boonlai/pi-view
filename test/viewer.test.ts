@@ -7,16 +7,22 @@ import { setTimeout as delay } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { visibleWidth, type TUI, type TuiInputListener } from "@earendil-works/pi-tui";
+import { getCellDimensions, resetCapabilitiesCache, setCapabilityOverrides, setCellDimensions, visibleWidth, type TUI, type TuiInputListener } from "@earendil-works/pi-tui";
+import sharp from "sharp";
 import { PreviewViewer } from "../src/viewer.ts";
+import { mediaDiagnostics } from "../src/documents.ts";
 
 initTheme("dark", false);
 const theme = getThemeByName("dark")!;
-
-async function setup(t: { after(fn: () => void | Promise<void>): void }, filename?: string, content?: string) {
+async function setup(t: { after(fn: () => void | Promise<void>): void }, filename?: string, content?: string | Buffer, options?: { images?: boolean }) {
   const dir = await mkdtemp(join(tmpdir(), "pi-view-ui-test-"));
   const previous = process.env.PI_VIEW_IMAGES;
-  process.env.PI_VIEW_IMAGES = "off";
+  process.env.PI_VIEW_IMAGES = options?.images ? "auto" : "off";
+  const previousCell = getCellDimensions();
+  if (options?.images) {
+    setCapabilityOverrides({ images: "kitty", trueColor: true, hyperlinks: true });
+    setCellDimensions({ widthPx: 10, heightPx: 20 });
+  }
   const listeners = new Set<TuiInputListener>();
   const writes: string[] = [];
   const terminal = { rows: 18, columns: 72, write: (data: string) => writes.push(data) };
@@ -32,6 +38,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, filenam
   t.after(async () => {
     viewer.dispose();
     if (previous === undefined) delete process.env.PI_VIEW_IMAGES; else process.env.PI_VIEW_IMAGES = previous;
+    if (options?.images) { setCapabilityOverrides({}); resetCapabilitiesCache(); setCellDimensions(previousCell); }
     await rm(dir, { recursive: true, force: true });
   });
   return { dir, path, viewer, terminal, listeners, writes, closes: () => closes };
@@ -294,4 +301,201 @@ test("Markdown formatting joins inline words but preserves hard text boundaries"
     viewer.handleInput("/"); viewer.handleInput("\x15"); type(viewer, query);
     assert.match(stripVTControlCharacters(viewer.render(120).at(-1)!), /^No match:/);
   }
+});
+
+const WHEEL_UP = "\x1b[<64;10;10M";
+const WHEEL_DOWN = "\x1b[<65;10;10M";
+
+function wheel(listeners: Set<TuiInputListener>, direction: "up" | "down"): void {
+  const packet = direction === "up" ? WHEEL_UP : WHEEL_DOWN;
+  for (const listener of [...listeners]) listener(packet);
+}
+
+function rawRender(viewer: PreviewViewer, width = 160): string {
+  return viewer.render(width).join("\n");
+}
+
+async function rawScreen(viewer: PreviewViewer, predicate: (rendered: string) => boolean): Promise<string> {
+  let rendered = "";
+  for (let attempt = 0; attempt < 200; attempt++) {
+    rendered = rawRender(viewer);
+    if (predicate(rendered)) return rendered;
+    await delay(20);
+  }
+  assert.fail(`Viewer never reached expected raw output:\n${stripVTControlCharacters(rendered)}`);
+}
+
+// Every displayed frame emits exactly one Kitty transmit header; its i= id is
+// public output, so frame identity and retirement are observable without
+// touching viewer internals.
+function frameIds(rendered: string): number[] {
+  return [...rendered.matchAll(/\x1b_G([^;]*);/g)]
+    .filter(([, header]) => header.split(",").includes("a=T"))
+    .map(([, header]) => Number(header.split(",").find(field => field.startsWith("i="))?.slice(2)))
+    .filter(id => Number.isInteger(id));
+}
+
+async function framePixels(rendered: string): Promise<Buffer> {
+  const data = [...rendered.matchAll(/\x1b_G[^;]*;([A-Za-z0-9+/=]+)(?=\x1b)/g)].map(match => match[1]).join("");
+  return sharp(Buffer.from(data, "base64")).ensureAlpha().raw().toBuffer();
+}
+
+function deletedIds(writes: string[]): number[] {
+  return [...writes.join("").matchAll(/\x1b_G([^;]*?)\x1b\\/g)]
+    .map(([, header]) => header.split(","))
+    .filter(fields => fields.includes("d=I"))
+    .map(fields => Number(fields.find(field => field.startsWith("i="))?.slice(2)))
+    .filter(id => Number.isInteger(id));
+}
+
+function rasterPng(width: number, height: number, color: string): Promise<Buffer> {
+  return sharp({ create: { width, height, channels: 3, background: color } }).png().toBuffer();
+}
+
+function multiPagePdf(labels: string[]): Buffer {
+  const colors = ["0.9 0.25 0.2", "0.2 0.7 0.3", "0.25 0.4 0.9"];
+  const streams = labels.map((label, index) => `${colors[index % colors.length]} rg 0 0 200 100 re f 0 0 0 rg BT /F1 18 Tf 20 70 Td (${label} page) Tj ET`);
+  const fontObject = 3 + labels.length * 2;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${labels.map((_, index) => `${3 + index} 0 R`).join(" ")}] /Count ${labels.length} >>`,
+    ...labels.map((_, index) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Resources << /Font << /F1 ${fontObject} 0 R >> >> /Contents ${3 + labels.length + index} 0 R >>`),
+    ...streams.map(stream => `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf);
+}
+
+test("Wheel never zooms a raster while plus, minus and reset still do", { timeout: 30_000 }, async t => {
+  const { viewer, writes, listeners } = await setup(t, "photo.png", await rasterPng(60, 40, "red"), { images: true });
+  const initial = await rawScreen(viewer, rendered => frameIds(rendered).length > 0);
+  const shownId = frameIds(initial)[0];
+  assert.equal(new Set(frameIds(initial)).size, 1);
+  assert.match(stripVTControlCharacters(initial), /×1\.00/);
+  assert.match(stripVTControlCharacters(initial), /arrows: pan/);
+  assert.doesNotMatch(initial, /— loading/);
+
+  wheel(listeners, "down"); wheel(listeners, "down"); wheel(listeners, "up"); wheel(listeners, "up");
+  assert.equal(rawRender(viewer), initial); // wheel leaves fit zoom and pixels untouched
+  assert.deepEqual(deletedIds(writes), []);
+
+  viewer.handleInput("+");
+  assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.20/);
+  assert.deepEqual(frameIds(rawRender(viewer)), [shownId]); // old pixels stay until replacement
+  const zoomed = await rawScreen(viewer, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(shownId));
+  const zoomedId = frameIds(zoomed)[0];
+  assert.doesNotMatch(zoomed, /— loading/);
+
+  viewer.handleInput("-");
+  assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.00/);
+  assert.deepEqual(frameIds(rawRender(viewer)), [zoomedId]);
+  viewer.handleInput("0");
+  const reset = await rawScreen(viewer, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(zoomedId));
+  assert.equal(frameIds(reset).length, 1);
+  assert.doesNotMatch(reset, /— loading/);
+  assert.deepEqual(deletedIds(writes), [shownId, zoomedId]); // each retired frame is deleted exactly once
+});
+
+test("Burst zoom and pan converge without dropping the displayed frame", { timeout: 30_000 }, async t => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="60" height="40"><rect width="60" height="40" fill="blue"/><rect y="20" width="60" height="20" fill="red"/></svg>';
+  const { viewer, writes } = await setup(t, "strip.svg", svg, { images: true });
+  const initial = await rawScreen(viewer, rendered => frameIds(rendered).length > 0);
+  const shownId = frameIds(initial)[0];
+  viewer.handleInput("+");
+  assert.deepEqual(frameIds(rawRender(viewer)), [shownId]);
+  viewer.handleInput("\x1b[B");
+  const pending = rawRender(viewer);
+  assert.deepEqual(frameIds(pending), [shownId]);
+  assert.doesNotMatch(pending, /— loading/);
+  assert.deepEqual(deletedIds(writes), []);
+
+  // A burst must reach the same pixels as individually completed inputs,
+  // regardless of how many intermediate transforms were coalesced.
+  const { viewer: sequential } = await setup(t, "strip.svg", svg, { images: true });
+  let prior = frameIds(await rawScreen(sequential, rendered => frameIds(rendered).length > 0))[0];
+  sequential.handleInput("+");
+  const zoomed = await rawScreen(sequential, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(prior));
+  prior = frameIds(zoomed)[0];
+  sequential.handleInput("\x1b[B");
+  const panned = await rawScreen(sequential, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(prior));
+  const expected = await framePixels(panned);
+  assert.notDeepEqual(expected, await framePixels(zoomed));
+  let final = "";
+  for (let i = 0; i < 200; i++) {
+    final = rawRender(viewer);
+    assert.doesNotMatch(final, /— loading/);
+    if ((await framePixels(final)).equals(expected)) break;
+    await delay(20);
+  }
+  assert.deepEqual(await framePixels(final), expected);
+  const retired = deletedIds(writes);
+  assert.ok(retired.includes(shownId));
+  assert.equal(new Set(retired).size, retired.length);
+  assert.ok(!retired.includes(frameIds(final)[0]));
+});
+
+test("Wheel leaves a focused Markdown image fit while plus zooms it", { timeout: 30_000 }, async t => {
+  const { dir, viewer, writes, listeners } = await setup(t, "doc.md", "# Doc\n\n![pic](pic.png)\n\nTail text.\n", { images: true });
+  await writeFile(join(dir, "pic.png"), await rasterPng(50, 30, "green"));
+  await rawScreen(viewer, rendered => frameIds(rendered).length > 0); // embedded fit frame
+  viewer.handleInput("i");
+  const focused = await rawScreen(viewer, rendered => /×1\.00/.test(stripVTControlCharacters(rendered)) && frameIds(rendered).length > 0);
+  const focusedId = frameIds(focused)[0];
+
+  wheel(listeners, "down"); wheel(listeners, "up");
+  assert.equal(rawRender(viewer), focused);
+  viewer.handleInput("+");
+  assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.20/);
+  const zoomed = await rawScreen(viewer, rendered => {
+    const ids = frameIds(rendered);
+    return ids.length === 1 && !ids.includes(focusedId) && deletedIds(writes).includes(focusedId);
+  });
+  assert.doesNotMatch(zoomed, /— loading/);
+});
+
+test("Wheel pages and clamps a multi-page PDF while zoom and arrows keep working", { timeout: 120_000 }, async t => {
+  const diagnostic = await mediaDiagnostics();
+  if (diagnostic.filter(line => /^(pdfinfo|pdftoppm|pdftotext): available$/.test(line)).length < 3) { t.skip("Poppler is not installed"); return; }
+  const { viewer, writes, listeners } = await setup(t, "book.pdf", multiPagePdf(["Red", "Green", "Blue"]), { images: true });
+  const page = (rendered: string): string => stripVTControlCharacters(rendered).match(/page \d\/3/)?.[0] ?? "";
+  const first = await rawScreen(viewer, rendered => page(rendered) === "page 1/3" && frameIds(rendered).length > 0);
+  const firstId = frameIds(first)[0];
+
+  wheel(listeners, "down");
+  assert.equal(page(rawRender(viewer)), "page 2/3");
+  viewer.handleInput("+");
+  assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.20/);
+  wheel(listeners, "down");
+  assert.equal(page(rawRender(viewer)), "page 3/3");
+  assert.match(stripVTControlCharacters(rawRender(viewer)), /×1\.00/); // paging resets to fit
+  wheel(listeners, "down");
+  assert.equal(page(rawRender(viewer)), "page 3/3"); // clamped at the last page
+  wheel(listeners, "up"); wheel(listeners, "up"); wheel(listeners, "up");
+  assert.equal(page(rawRender(viewer)), "page 1/3"); // clamped at the first page
+
+  wheel(listeners, "down");
+  const second = await rawScreen(viewer, rendered => page(rendered) === "page 2/3" && frameIds(rendered).length > 0 && !frameIds(rendered).includes(firstId));
+  const secondId = frameIds(second)[0];
+  assert.ok(deletedIds(writes).includes(firstId)); // the paged-away placement is released
+  assert.ok(!deletedIds(writes).includes(secondId));
+
+  viewer.handleInput("+");
+  const zoomed = await rawScreen(viewer, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(secondId));
+  const zoomId = frameIds(zoomed)[0];
+  viewer.handleInput("\x1b[B");
+  const panned = await rawScreen(viewer, rendered => frameIds(rendered).length > 0 && !frameIds(rendered).includes(zoomId));
+  assert.doesNotMatch(panned, /— loading/);
+  assert.notDeepEqual(await framePixels(panned), await framePixels(zoomed));
+  wheel(listeners, "down");
+  assert.equal(page(rawRender(viewer)), "page 3/3"); // wheel pages while panned, never zooms
 });

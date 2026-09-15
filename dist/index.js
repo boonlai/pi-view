@@ -1990,8 +1990,7 @@ function createTerminalImage(png, widthCells, heightCells, label, tui) {
       ownedLines = lines.map((line) => line.replace(/\x1b_G([^;]*);/g, (sequence, header) => {
         const fields = header.split(",");
         if (!fields.some((field) => field === "a=T" || field === "a=t" || field === "a=p")) return sequence;
-        if (fields.includes(`i=${imageId}`)) return sequence;
-        return `\x1B_G${fields.filter((field) => !field.startsWith("i=")).join(",")},i=${imageId};`;
+        return `\x1B_G${fields.filter((field) => !field.startsWith("i=") && !field.startsWith("z=")).join(",")},i=${imageId},z=-1073741825;`;
       }));
       return ownedLines;
     },
@@ -2221,9 +2220,10 @@ l                          Toggle source line numbers
 s                          Markdown source / PDF extracted text
 Enter or i                 Focus the first visible Markdown image
 b                          Return from an image/help/diagnostics
-+ / - or mouse wheel       Zoom a focused image or PDF page
++ / -                      Zoom a focused image or PDF page
 0 / 1                      Fit / actual raster size
 [ / ] or PgUp/PgDn         Previous / next PDF page
+Mouse wheel                Scroll text or change PDF pages; no image zoom
 g                          Jump to a PDF page
 r                          Reload (source file changes also reload)
 R                          Ask to load remote Markdown images
@@ -2334,6 +2334,7 @@ var PreviewViewer = class {
     for (const frame of this.frames.values()) {
       frame.abort.abort();
       frame.component?.dispose();
+      frame.retired?.dispose();
     }
     this.frames.clear();
   }
@@ -2434,10 +2435,21 @@ var PreviewViewer = class {
     return !this.panel && !this.picker && (!!this.focusImage || this.document?.kind === "image" || this.document?.kind === "pdf" && !this.source);
   }
   wheel(delta) {
-    if (this.closed || this.inputMode || this.remotePrompt) return;
-    if (this.imageMode()) this.zoom = Math.max(0.05, Math.min(32, this.zoom * (delta < 0 ? 1.2 : 1 / 1.2)));
-    else if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
+    if (this.closed || this.inputMode || this.remotePrompt || !delta) return;
+    if (this.imageMode()) {
+      if (this.document?.kind === "pdf") this.setPage(this.page + Math.sign(delta));
+      return;
+    }
+    if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
     else this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
+    this.redraw();
+  }
+  setPage(page) {
+    if (this.document?.kind !== "pdf") return;
+    page = Math.max(1, Math.min(this.document.pages, page));
+    if (page === this.page) return;
+    this.page = page;
+    this.resetZoom();
     this.redraw();
   }
   handleInput(data) {
@@ -2532,9 +2544,7 @@ var PreviewViewer = class {
         return;
       }
       if (data === "[" || data === "]" || this.imageMode() && (matchesKey(data, "pageUp") || matchesKey(data, "pageDown"))) {
-        this.page = Math.max(1, Math.min(this.document.pages, this.page + (data === "[" || matchesKey(data, "pageUp") ? -1 : 1)));
-        this.resetZoom();
-        this.redraw();
+        this.setPage(this.page + (data === "[" || matchesKey(data, "pageUp") ? -1 : 1));
         return;
       }
     }
@@ -2606,10 +2616,8 @@ var PreviewViewer = class {
     }
     if (mode === "page" && this.document?.kind === "pdf") {
       const page = Number(value);
-      if (Number.isInteger(page) && page >= 1 && page <= this.document.pages) {
-        this.page = page;
-        this.resetZoom();
-      } else this.message = `Choose a page from 1 to ${this.document.pages}`;
+      if (Number.isInteger(page) && page >= 1 && page <= this.document.pages) this.setPage(page);
+      else this.message = `Choose a page from 1 to ${this.document.pages}`;
     }
     this.redraw();
   }
@@ -2818,25 +2826,21 @@ var PreviewViewer = class {
     const cap = capabilities();
     const label = safeText(target.startsWith("data:") ? "embedded image" : target).replace(/[\n\t]/g, " ");
     if (!cap.protocol || width < 5) return [truncateToWidth(this.theme.fg("muted", `[${safeText(label)}] \u2014 terminal images unavailable; d: diagnostics`), width), ...Array(rows - 1).fill("")];
-    const key = [
-      target,
-      width,
-      fullRows,
-      top,
-      rows,
-      cap.protocol,
-      cap.cellWidth,
-      cap.cellHeight,
-      focused ? `${this.zoom}|${this.actualSize}|${this.panX}|${this.panY}` : "fit"
-    ].join("|");
+    const key = [target, width, fullRows, top, rows, cap.protocol, cap.cellWidth, cap.cellHeight, focused].join("|");
+    const transform = focused ? `${this.zoom}|${this.actualSize}|${this.panX}|${this.panY}` : "fit";
     used.add(key);
     let frame = this.frames.get(key);
     if (!frame) {
       frame = { abort: new AbortController() };
       this.frames.set(key, frame);
+    }
+    if (frame.rendered !== transform && !frame.pending) {
       const current = frame;
-      const signal = AbortSignal.any([this.abort.signal, frame.abort.signal]);
-      void this.getImage(target).then((image) => renderRaster(image, {
+      if (this.message === current.error) this.message = "";
+      current.error = void 0;
+      current.pending = transform;
+      const signal = AbortSignal.any([this.abort.signal, current.abort.signal]);
+      const options = {
         widthPx: Math.max(1, Math.floor((width - 2) * cap.cellWidth)),
         heightPx: Math.max(1, Math.floor(fullRows * cap.cellHeight)),
         zoom: focused ? this.zoom : 1,
@@ -2845,19 +2849,31 @@ var PreviewViewer = class {
         panY: focused ? this.panY : 0.5,
         cropTopPx: Math.floor(top * cap.cellHeight),
         cropHeightPx: Math.max(1, Math.floor(rows * cap.cellHeight))
-      }, signal)).then((png) => {
+      };
+      void this.getImage(target).then((image) => renderRaster(image, options, signal)).then((png) => {
         if (signal.aborted || this.closed) return;
-        current.component = createTerminalImage(png, width - 2, rows, label, this.tui);
-        this.redraw();
+        const component = createTerminalImage(png, width - 2, rows, label, this.tui);
+        current.retired = current.component;
+        current.component = component;
+        current.rendered = transform;
       }).catch((error) => {
         if (!signal.aborted && !this.closed) {
           current.error = safeText(error.message);
-          this.redraw();
+          current.rendered = transform;
+          this.message = current.error;
         }
+      }).finally(() => {
+        current.pending = void 0;
+        if (!signal.aborted) this.redraw();
       });
     }
     if (frame.component) {
       const lines = frame.component.render(width);
+      if (frame.retired) {
+        const retired = frame.retired;
+        frame.retired = void 0;
+        queueMicrotask(() => retired.dispose());
+      }
       return [...lines.slice(0, rows), ...Array(Math.max(0, rows - lines.length)).fill("")];
     }
     const status = frame.error ? ` \u2014 ${frame.error}` : " \u2014 loading\u2026";
@@ -2926,6 +2942,7 @@ var PreviewViewer = class {
     for (const [key, frame] of this.frames) if (!used.has(key)) {
       frame.abort.abort();
       frame.component?.dispose();
+      frame.retired?.dispose();
       this.frames.delete(key);
     }
     for (const [target, source] of this.images) {
@@ -2935,7 +2952,7 @@ var PreviewViewer = class {
       }
     }
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
-    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? "+/- wheel: zoom \xB7 arrows: pan \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 ?: help \xB7 Esc: close" : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
+    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
     return [
       this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)),
@@ -3128,7 +3145,10 @@ var QuickOpen = class {
       this.theme.fg(this.message ? "error" : "dim", footer.replace(/[\n\t]/g, " ")),
       this.theme.fg("borderAccent", `\u2570${"\u2500".repeat(Math.max(0, width - 2))}\u256F`)
     ];
-    return lines.map((line, index) => index === 0 || index === lines.length - 1 ? truncateToWidth2(line, width, "") : truncateToWidth2(`  ${line}`, width, ""));
+    return lines.map((line, index) => this.theme.bg(
+      "customMessageBg",
+      truncateToWidth2(index === 0 || index === lines.length - 1 ? line : `  ${line}`, width, "", true)
+    ));
   }
 };
 
@@ -3389,7 +3409,10 @@ function piView(pi) {
         return quick;
       }, {
         overlay: true,
-        overlayOptions: { ...fullscreen, width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 },
+        // Borrow the preview's alternate screen only when one is already open;
+        // a standalone picker must leave the normal agent viewport behind it.
+        // Nested pickers start below the preview's image-control row.
+        overlayOptions: { ...closePreview ? fullscreen : {}, width: "80%", maxHeight: "90%", anchor: "top-center", row: closePreview ? 3 : 2 },
         onHandle: (received) => {
           handle = received;
         }

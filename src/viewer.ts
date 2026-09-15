@@ -13,7 +13,7 @@ type TextUnit = { content: string; spans: { row: number; start: number; end: num
 type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
 type SearchMatch = { row: number; endRow: number };
 type SearchState = { query: string; matches: SearchMatch[] };
-type Frame = { abort: AbortController; component?: TerminalImage; error?: string };
+type Frame = { abort: AbortController; component?: TerminalImage; retired?: TerminalImage; error?: string; rendered?: string; pending?: string };
 type LoadedImage = { image?: ImageSource; error?: string; promise?: Promise<ImageSource>; abort?: AbortController };
 
 function markdownSourceUnits(source: string): string[] {
@@ -65,9 +65,10 @@ l                          Toggle source line numbers
 s                          Markdown source / PDF extracted text
 Enter or i                 Focus the first visible Markdown image
 b                          Return from an image/help/diagnostics
-+ / - or mouse wheel       Zoom a focused image or PDF page
++ / -                      Zoom a focused image or PDF page
 0 / 1                      Fit / actual raster size
 [ / ] or PgUp/PgDn         Previous / next PDF page
+Mouse wheel                Scroll text or change PDF pages; no image zoom
 g                          Jump to a PDF page
 r                          Reload (source file changes also reload)
 R                          Ask to load remote Markdown images
@@ -165,7 +166,7 @@ export class PreviewViewer implements Component {
   }
 
   private clearFrames(): void {
-    for (const frame of this.frames.values()) { frame.abort.abort(); frame.component?.dispose(); }
+    for (const frame of this.frames.values()) { frame.abort.abort(); frame.component?.dispose(); frame.retired?.dispose(); }
     this.frames.clear();
   }
 
@@ -252,10 +253,22 @@ export class PreviewViewer implements Component {
   }
 
   wheel(delta: number): void {
-    if (this.closed || this.inputMode || this.remotePrompt) return;
-    if (this.imageMode()) this.zoom = Math.max(0.05, Math.min(32, this.zoom * (delta < 0 ? 1.2 : 1 / 1.2)));
-    else if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
+    if (this.closed || this.inputMode || this.remotePrompt || !delta) return;
+    if (this.imageMode()) {
+      if (this.document?.kind === "pdf") this.setPage(this.page + Math.sign(delta));
+      return;
+    }
+    if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
     else this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
+    this.redraw();
+  }
+
+  private setPage(page: number): void {
+    if (this.document?.kind !== "pdf") return;
+    page = Math.max(1, Math.min(this.document.pages, page));
+    if (page === this.page) return;
+    this.page = page;
+    this.resetZoom();
     this.redraw();
   }
 
@@ -306,8 +319,8 @@ export class PreviewViewer implements Component {
     if (this.document?.kind === "pdf" && !this.panel) {
       if (data === "g") { this.startInput("page"); return; }
       if (data === "[" || data === "]" || (this.imageMode() && (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")))) {
-        this.page = Math.max(1, Math.min(this.document.pages, this.page + (data === "[" || matchesKey(data, "pageUp") ? -1 : 1)));
-        this.resetZoom(); this.redraw(); return;
+        this.setPage(this.page + (data === "[" || matchesKey(data, "pageUp") ? -1 : 1));
+        return;
       }
     }
     if (this.imageMode()) {
@@ -353,7 +366,7 @@ export class PreviewViewer implements Component {
     if (mode === "search") { this.query = value; this.findMatch(1, true); }
     if (mode === "page" && this.document?.kind === "pdf") {
       const page = Number(value);
-      if (Number.isInteger(page) && page >= 1 && page <= this.document.pages) { this.page = page; this.resetZoom(); }
+      if (Number.isInteger(page) && page >= 1 && page <= this.document.pages) this.setPage(page);
       else this.message = `Choose a page from 1 to ${this.document.pages}`;
     }
     this.redraw();
@@ -554,30 +567,54 @@ export class PreviewViewer implements Component {
     const cap = capabilities();
     const label = safeText(target.startsWith("data:") ? "embedded image" : target).replace(/[\n\t]/g, " ");
     if (!cap.protocol || width < 5) return [truncateToWidth(this.theme.fg("muted", `[${safeText(label)}] — terminal images unavailable; d: diagnostics`), width), ...Array(rows - 1).fill("")];
-    const key = [target, width, fullRows, top, rows, cap.protocol, cap.cellWidth, cap.cellHeight,
-      focused ? `${this.zoom}|${this.actualSize}|${this.panX}|${this.panY}` : "fit"].join("|");
+    const key = [target, width, fullRows, top, rows, cap.protocol, cap.cellWidth, cap.cellHeight, focused].join("|");
+    const transform = focused ? `${this.zoom}|${this.actualSize}|${this.panX}|${this.panY}` : "fit";
     used.add(key);
     let frame = this.frames.get(key);
     if (!frame) {
       frame = { abort: new AbortController() };
       this.frames.set(key, frame);
+    }
+    // One active render per slot. Keep its last pixels visible and pick up the
+    // latest transform on completion instead of killing/restarting the worker.
+    if (frame.rendered !== transform && !frame.pending) {
       const current = frame;
-      const signal = AbortSignal.any([this.abort.signal, frame.abort.signal]);
-      void this.getImage(target).then(image => renderRaster(image, {
+      if (this.message === current.error) this.message = "";
+      current.error = undefined;
+      current.pending = transform;
+      const signal = AbortSignal.any([this.abort.signal, current.abort.signal]);
+      const options = {
         widthPx: Math.max(1, Math.floor((width - 2) * cap.cellWidth)), heightPx: Math.max(1, Math.floor(fullRows * cap.cellHeight)),
         zoom: focused ? this.zoom : 1, actualSize: focused && this.actualSize,
         panX: focused ? this.panX : 0.5, panY: focused ? this.panY : 0.5,
         cropTopPx: Math.floor(top * cap.cellHeight), cropHeightPx: Math.max(1, Math.floor(rows * cap.cellHeight)),
-      }, signal)).then(png => {
+      };
+      void this.getImage(target).then(image => renderRaster(image, options, signal)).then(png => {
         if (signal.aborted || this.closed) return;
-        current.component = createTerminalImage(png, width - 2, rows, label, this.tui);
-        this.redraw();
+        const component = createTerminalImage(png, width - 2, rows, label, this.tui);
+        current.retired = current.component;
+        current.component = component;
+        current.rendered = transform;
       }).catch(error => {
-        if (!signal.aborted && !this.closed) { current.error = safeText((error as Error).message); this.redraw(); }
+        if (!signal.aborted && !this.closed) {
+          current.error = safeText((error as Error).message);
+          current.rendered = transform;
+          this.message = current.error;
+        }
+      }).finally(() => {
+        current.pending = undefined;
+        if (!signal.aborted) this.redraw();
       });
     }
     if (frame.component) {
       const lines = frame.component.render(width);
+      if (frame.retired) {
+        const retired = frame.retired;
+        frame.retired = undefined;
+        // The host writes this synchronous render's replacement before the
+        // microtask removes the old, independently owned image placement.
+        queueMicrotask(() => retired.dispose());
+      }
       return [...lines.slice(0, rows), ...Array(Math.max(0, rows - lines.length)).fill("")];
     }
     const status = frame.error ? ` — ${frame.error}` : " — loading…";
@@ -644,13 +681,13 @@ export class PreviewViewer implements Component {
       if (this.totalRows) title += ` · ${this.offset + 1}/${this.totalRows}${this.source ? " · source" : ""}`;
       if (this.query && this.matchRow !== undefined) title += ` · match ${this.matchRow + 1}`;
     }
-    for (const [key, frame] of this.frames) if (!used.has(key)) { frame.abort.abort(); frame.component?.dispose(); this.frames.delete(key); }
+    for (const [key, frame] of this.frames) if (!used.has(key)) { frame.abort.abort(); frame.component?.dispose(); frame.retired?.dispose(); this.frames.delete(key); }
     for (const [target, source] of this.images) {
       if (source.promise && !this.requestedImages.has(target)) { source.abort?.abort(); this.images.delete(target); }
     }
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
     let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow · any other key: deny"
-      : this.message || (this.imageMode() ? "+/- wheel: zoom · arrows: pan · 0: fit · 1: actual · b: back · ?: help · Esc: close"
+      : this.message || (this.imageMode() ? `+/-: zoom · arrows: pan${document?.kind === "pdf" ? " · wheel: pages" : ""} · 0: fit · 1: actual · b: back · Esc: close`
       : this.picker && !this.panel ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
       : "↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;

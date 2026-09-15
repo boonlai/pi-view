@@ -102,7 +102,10 @@ export default function piView(pi: ExtensionAPI): void {
         return quick;
       }, {
         overlay: true,
-        overlayOptions: { ...fullscreen, width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 },
+        // Borrow the preview's alternate screen only when one is already open;
+        // a standalone picker must leave the normal agent viewport behind it.
+        // Nested pickers start below the preview's image-control row.
+        overlayOptions: { ...(closePreview ? fullscreen : {}), width: "80%", maxHeight: "90%", anchor: "top-center", row: closePreview ? 3 : 2 },
         onHandle: received => { handle = received; },
       });
     } finally { quick?.dispose(); closeQuick = undefined; quickPending = false; }

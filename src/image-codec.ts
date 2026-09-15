@@ -56,16 +56,28 @@ export async function renderRaster(image: ImageSource, options: RasterOptions, s
   const top = Math.round((image.height - regionH) * clampPan(options.panY));
   const outW = Math.max(1, Math.min(widthPx, Math.round(regionW * scale)));
   const outH = Math.max(1, Math.min(heightPx, Math.round(regionH * scale)));
-  const imageBytes = await sharp(image.data).extract({ left, top, width: regionW, height: regionH })
-    .resize(outW, outH, { fit: "fill" }).png().toBuffer();
-  signal?.throwIfAborted();
-  const canvas = await sharp({ create: { width: widthPx, height: heightPx, channels: 4, background: "#00000000" } })
-    .composite([{ input: imageBytes, left: Math.floor((widthPx - outW) / 2), top: Math.floor((heightPx - outH) / 2) }])
-    .png().toBuffer();
+  const padLeft = Math.floor((widthPx - outW) / 2);
+  const padTop = Math.floor((heightPx - outH) / 2);
   const cropTop = Math.max(0, Math.min(heightPx - 1, Math.floor(options.cropTopPx ?? 0)));
   const cropHeight = Math.max(1, Math.min(heightPx - cropTop, Math.floor(options.cropHeightPx ?? heightPx)));
+  const visibleTop = Math.max(cropTop, padTop);
+  const visibleBottom = Math.min(cropTop + cropHeight, padTop + outH);
+  if (visibleBottom <= visibleTop) {
+    const result = await sharp({ create: { width: widthPx, height: cropHeight, channels: 4, background: "#00000000" } })
+      .png({ compressionLevel: 1 }).toBuffer();
+    signal?.throwIfAborted();
+    return result;
+  }
+  let pipeline = sharp(image.data).extract({ left, top, width: regionW, height: regionH })
+    .resize(outW, outH, { fit: "fill" });
+  if (visibleBottom - visibleTop !== outH) {
+    pipeline = pipeline.extract({ left: 0, top: visibleTop - padTop, width: outW, height: visibleBottom - visibleTop });
+  }
+  const result = await pipeline.extend({
+    left: padLeft, right: widthPx - outW - padLeft,
+    top: visibleTop - cropTop, bottom: cropTop + cropHeight - visibleBottom,
+    background: "#00000000",
+  }).png({ compressionLevel: 1 }).toBuffer();
   signal?.throwIfAborted();
-  return cropTop || cropHeight !== heightPx
-    ? sharp(canvas).extract({ left: 0, top: cropTop, width: widthPx, height: cropHeight }).png().toBuffer()
-    : canvas;
+  return result;
 }
