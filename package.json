@@ -1,0 +1,35 @@
+{
+  "name": "pi-view",
+  "version": "0.1.0",
+  "private": true,
+  "description": "In-terminal file previews for Pi and Oh My Pi",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "files": ["src"],
+  "pi": { "extensions": ["./src/index.ts"] },
+  "omp": { "extensions": ["./src/index.ts"] },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.5",
+    "sharp": "^0.34.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0",
+    "@earendil-works/pi-tui": ">=0.85.1 <0.86.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
