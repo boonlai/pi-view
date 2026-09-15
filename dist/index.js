@@ -1736,6 +1736,7 @@ import { getLanguageFromPath, getMarkdownTheme, highlightCode } from "@earendil-
 import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // src/host.ts
+import { randomInt } from "node:crypto";
 import * as piTui from "@earendil-works/pi-tui";
 var {
   Image,
@@ -1866,7 +1867,7 @@ function createTerminalImage(png, widthCells, heightCells, label, tui) {
   };
   const fit = fitCells(dims, maxWidthCells, maxHeightCells, cell);
   const protocol = resolveImageProtocol(process.env).protocol;
-  const imageId = protocol === "kitty" && typeof allocateImageId === "function" ? allocateImageId() : void 0;
+  const imageId = protocol === "kitty" ? typeof allocateImageId === "function" ? allocateImageId() : randomInt(1, 4294967296) : void 0;
   const native = new Image(
     base64,
     "image/png",
@@ -1880,6 +1881,8 @@ function createTerminalImage(png, widthCells, heightCells, label, tui) {
     dims
   );
   let disposed = false;
+  let nativeLines;
+  let ownedLines;
   return {
     get imageId() {
       return imageId;
@@ -1892,18 +1895,40 @@ function createTerminalImage(png, widthCells, heightCells, label, tui) {
     },
     render(width) {
       if (disposed) return [];
-      return native.render(width);
+      const lines = native.render(width);
+      if (imageId === void 0) return lines;
+      if (lines === nativeLines) return ownedLines;
+      nativeLines = lines;
+      ownedLines = lines.map((line) => line.replace(/\x1b_G([^;]*);/g, (sequence, header) => {
+        const fields = header.split(",");
+        if (!fields.some((field) => field === "a=T" || field === "a=t" || field === "a=p")) return sequence;
+        if (fields.includes(`i=${imageId}`)) return sequence;
+        return `\x1B_G${fields.filter((field) => !field.startsWith("i=")).join(",")},i=${imageId};`;
+      }));
+      return ownedLines;
     },
     invalidate() {
       native.invalidate();
+      nativeLines = void 0;
+      ownedLines = void 0;
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       native.invalidate();
+      nativeLines = void 0;
+      ownedLines = void 0;
       if (imageId !== void 0) {
         try {
-          writeRaw(tui, deleteKittyImage(imageId));
+          const ompDelete = piTui.encodeKittyDeleteImage;
+          const remove = typeof deleteKittyImage === "function" ? deleteKittyImage : ompDelete;
+          let sequence;
+          if (remove) sequence = remove(imageId);
+          else {
+            sequence = `\x1B_Ga=d,d=I,i=${imageId},q=2\x1B\\`;
+            if (process.env.TMUX) sequence = `\x1BPtmux;${sequence.replaceAll("\x1B", "\x1B\x1B")}\x1B\\`;
+          }
+          writeRaw(tui, sequence);
         } catch {
         }
       }

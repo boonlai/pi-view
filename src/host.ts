@@ -5,14 +5,15 @@
  * Both hosts expose the `@earendil-works/pi-tui` API surface; OMP rewrites the
  * import to its bundled copy. Everything in this module goes through that
  * surface so the same code runs on either host:
- * - `Image` emits kitty / iTerm2 / (OMP) Sixel sequences and registers kitty
- *   metadata that the host renderer tracks for placement caching.
- * - Disposal only ever deletes kitty image IDs allocated by this module.
+ * - `Image` supplies host-native layout and encoding. Anonymous Kitty
+ *   transmissions are tagged so every preview has an independently owned ID.
+ * - Disposal deletes only the IDs owned by this module.
  * - Wheel capture uses the raw TUI input listener hook present on both hosts;
  *   plain keyboard data always passes through.
  *
  * Global host capability state is only ever read, never mutated.
  */
+import { randomInt } from "node:crypto";
 import * as piTui from "@earendil-works/pi-tui";
 
 import type { TUI } from "@earendil-works/pi-tui";
@@ -232,11 +233,11 @@ export function createTerminalImage(
   const fit = fitCells(dims, maxWidthCells, maxHeightCells, cell);
   const protocol = resolveImageProtocol(process.env).protocol;
 
-  // Allocate a kitty ID only where the shared allocator exists (upstream Pi)
-  // and the resolved protocol is kitty. OMP's Image manages untagged inline
-  // transmits through its own render lifecycle; forcing our own ID there
-  // would bypass host placement tracking.
-  const imageId = protocol === "kitty" && typeof allocateImageId === "function" ? allocateImageId() : undefined;
+  // Pi accepts imageId directly. OMP 18.2 ignores that option without a
+  // renderer-owned ImageBudget, so tag its anonymous transmissions below.
+  const imageId = protocol === "kitty"
+    ? (typeof allocateImageId === "function" ? allocateImageId() : randomInt(1, 0x100000000))
+    : undefined;
 
   const native = new Image(
     base64,
@@ -252,6 +253,8 @@ export function createTerminalImage(
   );
 
   let disposed = false;
+  let nativeLines: readonly string[] | undefined;
+  let ownedLines: string[] | undefined;
 
   return {
     get imageId() {
@@ -265,20 +268,38 @@ export function createTerminalImage(
     },
     render(width: number): string[] {
       if (disposed) return [];
-      // Host component emits the escape sequences verbatim; no truncation or
-      // filtering is applied to its output.
-      return native.render(width);
+      const lines = native.render(width);
+      if (imageId === undefined) return lines;
+      if (lines === nativeLines) return ownedLines!;
+      nativeLines = lines;
+      ownedLines = lines.map(line => line.replace(/\x1b_G([^;]*);/g, (sequence, header: string) => {
+        const fields = header.split(",");
+        if (!fields.some(field => field === "a=T" || field === "a=t" || field === "a=p")) return sequence;
+        if (fields.includes(`i=${imageId}`)) return sequence; // Keep Pi's registered metadata unchanged.
+        return `\x1b_G${fields.filter(field => !field.startsWith("i=")).join(",")},i=${imageId};`;
+      }));
+      return ownedLines;
     },
     invalidate() {
       native.invalidate();
+      nativeLines = undefined; ownedLines = undefined;
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       native.invalidate();
+      nativeLines = undefined; ownedLines = undefined;
       if (imageId !== undefined) {
         try {
-          writeRaw(tui, deleteKittyImage(imageId));
+          const ompDelete = (piTui as typeof piTui & { encodeKittyDeleteImage?: (id: number) => string }).encodeKittyDeleteImage;
+          const remove = typeof deleteKittyImage === "function" ? deleteKittyImage : ompDelete;
+          let sequence: string;
+          if (remove) sequence = remove(imageId); // OMP's encoder includes its tmux passthrough.
+          else {
+            sequence = `\x1b_Ga=d,d=I,i=${imageId},q=2\x1b\\`;
+            if (process.env.TMUX) sequence = `\x1bPtmux;${sequence.replaceAll("\x1b", "\x1b\x1b")}\x1b\\`;
+          }
+          writeRaw(tui, sequence);
         } catch {
           // Terminal may already be gone; nothing else to release.
         }
