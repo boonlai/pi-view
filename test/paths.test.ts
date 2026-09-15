@@ -1,0 +1,198 @@
+import assert from "node:assert/strict";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import * as path from "node:path";
+import { MAX_COMPLETIONS, MAX_LIST_ENTRIES, completePath, listDirectory, resolvePath } from "../src/paths.ts";
+import { after, test } from "node:test";
+const tmp = mkdtempSync(path.join(tmpdir(), "pi-view-paths-"));
+
+mkdirSync(path.join(tmp, "nested"));
+writeFileSync(path.join(tmp, "nested/alpha.txt"), "a");
+writeFileSync(path.join(tmp, "nested/beta.md"), "b");
+mkdirSync(path.join(tmp, "my docs"));
+writeFileSync(path.join(tmp, 'my docs/a "quoted" file.txt'), "q");
+mkdirSync(path.join(tmp, "my docs/deep"));
+writeFileSync(path.join(tmp, "back\\slash.txt"), "b");
+writeFileSync(path.join(tmp, "naïve — café.txt"), "u");
+writeFileSync(path.join(tmp, "ünïcode.md"), "u2");
+writeFileSync(path.join(tmp, ".env"), "h");
+mkdirSync(path.join(tmp, ".hidden-dir"));
+writeFileSync(path.join(tmp, "README.md"), "r");
+writeFileSync(path.join(tmp, "plain.txt"), "p");
+symlinkSync(path.join(tmp, "nested"), path.join(tmp, "link"));
+symlinkSync(path.join(tmp, "no-such-target"), path.join(tmp, "broken"));
+mkdirSync(path.join(tmp, "locked-dir"));
+writeFileSync(path.join(tmp, "locked-dir/inner.txt"), "l");
+chmodSync(path.join(tmp, "locked-dir"), 0o000);
+const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
+
+after(() => {
+	chmodSync(path.join(tmp, "locked-dir"), 0o700);
+	rmSync(tmp, { recursive: true, force: true });
+});
+
+test("resolvePath resolves relative, absolute, tilde, and trailing separators", () => {
+	assert.equal(resolvePath("nested/alpha.txt", tmp), path.join(tmp, "nested/alpha.txt"));
+	assert.equal(resolvePath("nested/../plain.txt", tmp), path.join(tmp, "plain.txt"));
+	assert.equal(resolvePath(path.join(tmp, "plain.txt"), tmp), path.join(tmp, "plain.txt"));
+	assert.equal(resolvePath("~", tmp), homedir());
+	assert.equal(resolvePath("~/", tmp), homedir());
+	assert.equal(resolvePath("nested/", tmp), path.join(tmp, "nested"));
+});
+test("resolvePath parses quotes, escapes, and rejects flags and URLs", () => {
+	assert.equal(resolvePath('"my docs/a \\"quoted\\" file.txt"', tmp), path.join(tmp, 'my docs/a "quoted" file.txt'));
+	assert.equal(resolvePath("'my docs/deep'", tmp), path.join(tmp, "my docs/deep"));
+	assert.equal(resolvePath('"back\\\\slash.txt"', tmp), path.join(tmp, "back\\slash.txt"));
+	assert.equal(resolvePath('"~/my docs"', tmp), path.join(homedir(), "my docs"));
+	assert.equal(resolvePath('"-dash-name"', tmp), path.join(tmp, "-dash-name")); // quoted dash is a path, not a flag
+	assert.throws(() => resolvePath("", tmp), /no path/);
+	assert.throws(() => resolvePath("   ", tmp), /no path/);
+	assert.throws(() => resolvePath("--json", tmp), /flags/);
+	assert.throws(() => resolvePath("-x", tmp), /flags/);
+	assert.throws(() => resolvePath("https://example.com/a", tmp), /URL/);
+});
+
+test("hidden entries complete only with a dot prefix", () => {
+	const plain = completePath("", tmp)!;
+	assert.ok(plain.length > 0);
+	assert.ok(!plain.some(i => i.value.startsWith(".")));
+	assert.ok(plain.some(i => i.value === "README.md"));
+	const dotted = completePath(".", tmp)!;
+	assert.ok(dotted.some(i => i.value === ".env"));
+	assert.ok(dotted.some(i => i.value === ".hidden-dir/"));
+	assert.deepEqual(completePath(".env", tmp), [{ value: ".env", label: ".env" }]);
+});
+
+test("completions are directories first and every value roundtrips to a real file", () => {
+	const order = completePath("", tmp)!.map(i => i.label);
+	assert.deepEqual(order, [
+		"link/",
+		"locked-dir/",
+		"my docs/",
+		"nested/",
+		"README.md",
+		"back\\slash.txt",
+		"broken",
+		"naïve — café.txt",
+		"plain.txt",
+		"ünïcode.md",
+	]);
+	for (const args of ["", "n", "nested/", "nested/a", "my", '"my docs/', ".", "li", "ü", "README", "b", "back"]) {
+		for (const item of completePath(args, tmp) ?? []) {
+			const resolved = resolvePath(item.value, tmp);
+			let onDisk: boolean;
+			try {
+				lstatSync(resolved);
+				onDisk = true;
+			} catch {
+				onDisk = false;
+			}
+			assert.ok(onDisk, `${item.value} must resolve to a real directory entry`);
+		}
+	}
+});
+
+test("directory completions descend on subsequent completion", () => {
+	const first = completePath("nested", tmp)!;
+	assert.deepEqual(first, [{ value: "nested/", label: "nested/" }]);
+	const second = completePath(first[0].value, tmp)!;
+	assert.deepEqual(second.map(i => i.value), ["nested/alpha.txt", "nested/beta.md"]);
+	const third = completePath("nested/al", tmp)!;
+	assert.deepEqual(third, [{ value: "nested/alpha.txt", label: "alpha.txt" }]);
+	assert.equal(resolvePath(third[0].value, tmp), path.join(tmp, "nested/alpha.txt"));
+});
+
+test("names with spaces and quotes roundtrip through editor replacement", () => {
+	const step1 = completePath("my", tmp)!;
+	assert.deepEqual(step1.map(i => i.value), ['"my docs/']);
+	// the editor replaces everything after "/view " with item.value, so feeding
+	// the value back as the argument is exactly what the next Tab does
+	const step2 = completePath(step1[0].value, tmp)!;
+	assert.deepEqual(step2.map(i => i.value), ['"my docs/deep/', '"my docs/a \\"quoted\\" file.txt"']);
+	assert.equal(resolvePath(step2[1].value, tmp), path.join(tmp, 'my docs/a "quoted" file.txt'));
+	const again = completePath(step2[1].value, tmp)!;
+	assert.deepEqual(again.map(i => i.value), [step2[1].value]); // completing an exact name yields itself
+	const unicode = completePath("n", tmp)!;
+	assert.deepEqual(unicode.map(i => i.value), ["nested/", '"naïve — café.txt"']);
+	assert.equal(resolvePath(unicode[1].value, tmp), path.join(tmp, "naïve — café.txt"));
+	const slashed = completePath("back", tmp)!;
+	assert.deepEqual(slashed, [{ value: "back\\slash.txt", label: "back\\slash.txt" }]);
+});
+
+test("the same completer serves /view and /v", () => {
+	for (const cmd of ["/view ", "/v "]) {
+		const line = cmd + "nes";
+		const items = completePath(line.slice(cmd.length), tmp)!;
+		const replaced = cmd + items[0].value;
+		const next = completePath(replaced.slice(cmd.length), tmp)!;
+		assert.ok(next.some(i => i.value === "nested/alpha.txt"));
+	}
+});
+
+test("symlinks to directories descend; broken symlinks complete as files", () => {
+	assert.deepEqual(completePath("li", tmp), [{ value: "link/", label: "link/" }]);
+	const inside = completePath("link/", tmp)!;
+	assert.deepEqual(inside.map(i => i.value), ["link/alpha.txt", "link/beta.md"]);
+	assert.deepEqual(completePath("br", tmp), [{ value: "broken", label: "broken" }]);
+	assert.equal(resolvePath("broken", tmp), path.join(tmp, "broken"));
+});
+
+test("tilde completions preserve the ~ prefix", () => {
+	const items = completePath("~", tmp)!;
+	assert.ok(items.length > 0);
+	for (const item of items) {
+		assert.ok(item.value.startsWith("~/"), item.value);
+		assert.ok(resolvePath(item.value, tmp).startsWith(homedir()), item.value);
+	}
+});
+
+test("absolute arguments complete outside cwd", () => {
+	const items = completePath(path.join(tmp, "nes"), "/");
+	assert.deepEqual(items, [{ value: path.join(tmp, "nested") + "/", label: "nested/" }]);
+});
+
+test("nonexistent and unreadable targets return no completions", () => {
+	assert.equal(completePath("no-such-entry", tmp), null);
+	assert.equal(completePath("nested/no-such-dir/", tmp), null);
+	assert.equal(completePath("plain.txt/", tmp), null); // not a directory
+	assert.equal(completePath("--flag", tmp), null);
+	assert.equal(completePath("https://example.com/a", tmp), null);
+	if (!isRoot) assert.equal(completePath("locked-dir/", tmp), null); // EACCES
+});
+
+test("listDirectory returns directories first, sorted, with resolved symlinks", async () => {
+	const entries = await listDirectory(tmp);
+	const dirs = entries.filter(e => e.directory).map(e => e.name);
+	const files = entries.filter(e => !e.directory).map(e => e.name);
+	assert.deepEqual(dirs, [".hidden-dir", "link", "locked-dir", "my docs", "nested"]);
+	assert.deepEqual(files, [".env", "README.md", "back\\slash.txt", "broken", "naïve — café.txt", "plain.txt", "ünïcode.md"]);
+	assert.deepEqual(entries.map(e => e.path), entries.map(e => path.join(tmp, e.name)));
+	assert.ok(entries.find(e => e.name === "link")!.directory);
+	assert.ok(!entries.find(e => e.name === "broken")!.directory);
+	await assert.rejects(() => listDirectory(path.join(tmp, "no-such-dir")));
+});
+
+test("listing and completions are bounded", async () => {
+	const big = mkdtempSync(path.join(tmpdir(), "pi-view-bulk-"));
+	try {
+		for (let i = 0; i < MAX_LIST_ENTRIES + 5; i++) writeFileSync(path.join(big, `f${String(i).padStart(6, "0")}`), "");
+		assert.equal((await listDirectory(big)).length, MAX_LIST_ENTRIES);
+		assert.equal(completePath("f", big)!.length, MAX_COMPLETIONS);
+	} finally {
+		rmSync(big, { recursive: true, force: true });
+	}
+});
+
+test("completion values quote apostrophes, flags and literal tildes without exposing controls", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "pi-view-quoted-"));
+	try {
+		for (const name of ["it's.txt", "-flag.txt", "~", "bad\x1b[2J.txt"]) writeFileSync(path.join(dir, name), "");
+		const items = completePath("", dir)!;
+		assert.equal(items.length, 3);
+		for (const name of ["it's.txt", "-flag.txt", "~"]) {
+			const item = items.find(item => item.label === name)!;
+			assert.equal(resolvePath(item.value, dir), path.join(dir, name));
+		}
+		assert.ok(items.every(item => !item.label.includes("\x1b")));
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
