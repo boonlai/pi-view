@@ -136,3 +136,18 @@ test("SVG embedded rasters have a cumulative pre-decode pixel budget", async t =
   await writeFile(file, `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">${embedded.repeat(3)}</svg>`);
   await assert.rejects(loadImage(file, dir, false), /cumulative 40 megapixel/);
 });
+
+test("An aborted image job does not poison the next worker request", async t => {
+  const dir = await fixture(t);
+  const file = join(dir, "worker.png");
+  await sharp({ create: { width: 50, height: 20, channels: 3, background: "blue" } }).png().toFile(file);
+  const image = await loadImage(file, dir, false);
+  const options = { widthPx: 100, heightPx: 40, zoom: 1, panX: 0.5, panY: 0.5 };
+  const abort = new AbortController();
+  const pending = renderRaster(image, options, abort.signal);
+  abort.abort();
+  await assert.rejects(pending, /aborted/);
+  const recovered = await sharp(await renderRaster(image, options)).metadata();
+  assert.equal(recovered.width, 100);
+  assert.equal(recovered.height, 40);
+});

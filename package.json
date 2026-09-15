@@ -4,17 +4,28 @@
   "private": true,
   "description": "In-terminal file previews for Pi and Oh My Pi",
   "type": "module",
-  "engines": { "node": ">=22.19.0" },
-  "files": ["src"],
-  "pi": { "extensions": ["./src/index.ts"] },
-  "omp": { "extensions": ["./src/index.ts"] },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
   "scripts": {
+    "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "highlight.js": "^11.11.1",
-    "marked": "^18.0.5",
     "sharp": "^0.34.5"
   },
   "peerDependencies": {
@@ -22,13 +33,19 @@
     "@earendil-works/pi-tui": ">=0.85.1 <0.86.0"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-tui": "0.85.1",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.27.4",
+    "marked": "^18.0.5",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

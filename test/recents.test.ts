@@ -161,3 +161,10 @@ test("empty or malformed input yields no results", async () => {
 	assert.deepEqual(await recentFiles([], tmp), []);
 	assert.deepEqual(await recentFiles([null, 42, { type: "message" }, { type: "message", message: { role: "user" } }], tmp), []);
 });
+
+test("large messages prefer their newest mentions and repeats do not consume lookup budget", async () => {
+	const long = userMsg(`plain.txt ${" ".repeat(300_000)}nested/beta.md`);
+	assert.deepEqual(await recentFiles([long], tmp), [F("nested/beta.md")]);
+	const repeated = userMsg(`nested/alpha.txt ${"plain.txt ".repeat(1500)}`);
+	assert.deepEqual(await recentFiles([repeated], tmp), [F("plain.txt"), F("nested/alpha.txt")]);
+});

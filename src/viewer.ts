@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { getLanguageFromPath, getMarkdownTheme, highlightCode, type Theme } from "@earendil-works/pi-coding-agent";
-import { Input, Markdown, matchesKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import { listDirectory, MAX_LIST_ENTRIES, type FileEntry } from "./paths.ts";
 import { loadDocument, loadImage, loadPdfPage, mediaDiagnostics, pdfText, renderRaster, safeText, type ImageSource, type PreviewDocument } from "./documents.ts";
 import { attachMouse, capabilities, createTerminalImage, type TerminalImage } from "./host.ts";
@@ -220,6 +220,13 @@ export class PreviewViewer implements Component {
   }
 
   handleInput(data: string): void {
+    if (this.closed || isKeyRelease(data)) return;
+    const key = parseKey(data);
+    if (key?.length === 1) data = key;
+    else if (key && /^shift\+[a-z]$/.test(key)) data = key.slice(-1).toUpperCase();
+    else if (key === "shift+=") data = "+";
+    else if (key === "shift+/") data = "?";
+    else if (key === "space") data = " ";
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.dispose(); this.done(); return; }
     if (this.remotePrompt) {
       this.remotePrompt = false;

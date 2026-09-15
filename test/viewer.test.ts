@@ -59,7 +59,8 @@ test("Viewer scrolls, searches, toggles line numbers, reloads changes and closes
   assert.match(await screen(viewer, value => value.includes("const line14")), /const line14/);
   viewer.handleInput("/"); type(viewer, "line70");
   assert.match(await screen(viewer, value => value.includes("const line70")), /const line70/);
-  viewer.handleInput("l");
+  viewer.handleInput("\x1b[108;1u");
+  viewer.handleInput("\x1b[108;1:3u"); // key release must not toggle twice
   assert.match(stripVTControlCharacters(viewer.render(72).join("\n")), /70 │/);
   await writeFile(path, "const updated = true;\n");
   assert.match(await screen(viewer, value => value.includes("updated")), /updated/);

@@ -41,7 +41,7 @@ const EXT_RE = /\.[A-Za-z][A-Za-z0-9]{0,11}$/;
 
 /** Mentions found in one text blob, in occurrence order (cleaned, deduped later). */
 function scanTextMentions(text: string, out: string[]): void {
-	if (text.length > MAX_TEXT_CHARS) text = text.slice(0, MAX_TEXT_CHARS);
+	if (text.length > MAX_TEXT_CHARS) text = text.slice(-MAX_TEXT_CHARS);
 	for (const m of text.matchAll(MENTION_RE)) {
 		const raw = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5];
 		if (raw === undefined) continue;
@@ -157,10 +157,10 @@ export async function recentFiles(entries: readonly unknown[], cwd: string): Pro
 	const start = Math.max(0, entries.length - MAX_ENTRIES);
 	for (let i = entries.length - 1; i >= start; i--) {
 		for (const raw of entryMentions(entries[i])) {
-			if (budget-- <= 0) return out;
 			const abs = toAbsolutePath(raw, cwd);
 			if (abs === null || seenForms.has(abs)) continue;
 			seenForms.add(abs);
+			if (budget-- <= 0) return out;
 			const [st, rp] = await Promise.all([stat(abs).catch(() => null), realpath(abs).catch(() => null)]);
 			if (st === null || rp === null || !st.isFile()) continue;
 			if (seenReal.has(rp)) continue;

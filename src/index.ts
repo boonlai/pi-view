@@ -6,6 +6,7 @@ import { safeText } from "./documents.ts";
 import { PreviewViewer } from "./viewer.ts";
 import { QuickOpen } from "./quick-open.ts";
 import { recentFiles } from "./recents.ts";
+import { stopImageWorker } from "./image-client.ts";
 
 export default function piView(pi: ExtensionAPI): void {
   let cwd = process.cwd();
@@ -96,7 +97,7 @@ export default function piView(pi: ExtensionAPI): void {
       }));
     }
   });
-  pi.on("session_shutdown", () => { detachShortcut?.(); closeQuick?.(); closePreview?.(); });
+  pi.on("session_shutdown", () => { detachShortcut?.(); closeQuick?.(); closePreview?.(); stopImageWorker(); });
   pi.registerShortcut("super+p", {
     description: "Quick Open: recent session files and path completion",
     handler: ctx => showQuick(ctx).catch(error => ctx.ui.notify(safeText((error as Error).message), "error")),
