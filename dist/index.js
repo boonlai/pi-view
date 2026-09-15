@@ -3479,7 +3479,7 @@ function piView(pi) {
   });
   for (const name of ["view", "v"]) {
     pi.registerCommand(name, {
-      description: "Preview a file (Tab completes paths); no path opens Quick Open",
+      description: "Preview a file or leave blank to trigger Quick Open",
       getArgumentCompletions: completions,
       handler: async (args, ctx) => {
         cwd = ctx.cwd;
