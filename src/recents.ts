@@ -6,7 +6,7 @@
 // Candidates resolve against cwd, must be existing regular files (contents are
 // never read), and deduplicate by realpath while keeping the newest mention's
 // absolute form. Pure fs — no shell.
-import { realpath, stat } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import * as path from "node:path";
@@ -31,13 +31,31 @@ const VIEW_OPEN_TYPE = "pi-view-open";
 
 // One pass over text: Markdown link href, backticks, quoted strings, bare tokens.
 const MENTION_RE =
-	/\[[^\]\n]*\]\(([^()\s]+)\)|`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|([^\s'"`()[\]<>|,;]+)/g;
-// Trailing line/anchor selectors: :42, :42-47, :42:7, #L42, #L42-L50, #42.
-const LINE_SUFFIX_RE = /(?:[:#]L?\d+(?::\d+)?(?:-L?\d+)*)+$/;
-const TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]+$/;
+	/\[[^[\]\n]*\]\(([^()\s]+)\)|`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|([^\s'"`()[\]<>|,;]+)/g;
+const TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]/;
 const WIN_DRIVE_RE = /^[A-Za-z]:[\\/]/;
 const SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 const EXT_RE = /\.[A-Za-z][A-Za-z0-9]{0,11}$/;
+
+// Peel selectors from the right without overlapping regex alternatives.
+function cleanMention(raw: string): string {
+	const text = raw.trim();
+	let cursor = text.length;
+	while (cursor > 0 && TRAILING_PUNCT_RE.test(text[cursor - 1])) cursor--;
+	let cut = cursor;
+	while (cursor > 0) {
+		const end = cursor;
+		while (cursor > 0 && text.charCodeAt(cursor - 1) >= 48 && text.charCodeAt(cursor - 1) <= 57) cursor--;
+		if (cursor === end) break;
+		if (text[cursor - 1] === "L") cursor--;
+		const separator = text[cursor - 1];
+		if (separator === ":" || separator === "#") cut = --cursor;
+		else if (separator === "-") cursor--;
+		else break;
+	}
+	while (cut > 0 && TRAILING_PUNCT_RE.test(text[cut - 1])) cut--;
+	return text.slice(0, cut).trim();
+}
 
 /** Mentions found in one text blob, in occurrence order (cleaned, deduped later). */
 function scanTextMentions(text: string, out: string[]): void {
@@ -45,7 +63,7 @@ function scanTextMentions(text: string, out: string[]): void {
 	for (const m of text.matchAll(MENTION_RE)) {
 		const raw = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5];
 		if (raw === undefined) continue;
-		const s = raw.replace(TRAILING_PUNCT_RE, "").replace(LINE_SUFFIX_RE, "").replace(TRAILING_PUNCT_RE, "").trim();
+		const s = cleanMention(raw);
 		if (s === "") continue;
 		// Bare tokens must look path-like (no flags); quoted/backticked spans are trusted.
 		const bare = m[5] !== undefined;
@@ -115,12 +133,11 @@ function entryMentions(entry: unknown): string[] {
 }
 
 /**
- * Clean one mention and resolve it to an absolute path against cwd. Returns
- * null for nonlocal schemes (anything but file://), empty strings, and the
- * like; Windows drive colons survive because line suffixes require digits.
+ * Resolve a candidate after optional mention cleanup. Nonlocal URI schemes
+ * are not filesystem fallbacks; Windows drive paths retain their colons.
  */
 function toAbsolutePath(raw: string, cwd: string): string | null {
-	const s = raw.replace(TRAILING_PUNCT_RE, "").replace(LINE_SUFFIX_RE, "").replace(TRAILING_PUNCT_RE, "").trim();
+	const s = raw;
 	if (s === "") return null;
 	if (WIN_DRIVE_RE.test(s)) return path.resolve(s);
 	const scheme = SCHEME_RE.exec(s);
@@ -151,22 +168,49 @@ function toAbsolutePath(raw: string, cwd: string): string | null {
  */
 export async function recentFiles(entries: readonly unknown[], cwd: string): Promise<string[]> {
 	const out: string[] = [];
-	const seenForms = new Set<string>();
+	const seenForms = new Map<string, boolean>();
 	const seenReal = new Set<string>();
 	let budget = MAX_CANDIDATES;
 	const start = Math.max(0, entries.length - MAX_ENTRIES);
 	for (let i = entries.length - 1; i >= start; i--) {
-		for (const raw of entryMentions(entries[i])) {
-			const abs = toAbsolutePath(raw, cwd);
-			if (abs === null || seenForms.has(abs)) continue;
-			seenForms.add(abs);
-			if (budget-- <= 0) return out;
-			const [st, rp] = await Promise.all([stat(abs).catch(() => null), realpath(abs).catch(() => null)]);
-			if (st === null || rp === null || !st.isFile()) continue;
-			if (seenReal.has(rp)) continue;
-			seenReal.add(rp);
-			out.push(abs);
-			if (out.length >= MAX_RECENT_FILES) return out;
+		const entry = entries[i] as { type?: string; customType?: string } | null;
+		const exact = entry?.type === "custom" && entry.customType === VIEW_OPEN_TYPE;
+		for (const raw of entryMentions(entry)) {
+			// Our own records are exact filesystem paths. Tool arguments prefer
+			// an existing literal path before interpreting punctuation/selectors.
+			const literal = exact || !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw)
+				? path.resolve(cwd, raw) : toAbsolutePath(raw, cwd);
+			const forms = exact ? [literal] : [literal, toAbsolutePath(cleanMention(raw), cwd)];
+			for (const abs of forms) {
+				if (abs === null) continue;
+				if (seenForms.has(abs)) {
+					if (seenForms.get(abs)) break;
+					continue;
+				}
+				if (budget-- <= 0) return out;
+				let info;
+				try { info = await lstat(abs); }
+				catch (error) {
+					const code = (error as NodeJS.ErrnoException).code;
+					const missing = code === "ENOENT" || code === "ENOTDIR" || code === "ENAMETOOLONG";
+					seenForms.set(abs, !missing);
+					if (!missing) break;
+					continue;
+				}
+				seenForms.set(abs, true);
+				if (info.isSymbolicLink()) {
+					try { info = await stat(abs); } catch { break; }
+				}
+				if (!info.isFile()) break;
+				const rp = await realpath(abs).catch(() => null);
+				if (rp === null) break;
+				if (!seenReal.has(rp)) {
+					seenReal.add(rp);
+					out.push(abs);
+					if (out.length >= MAX_RECENT_FILES) return out;
+				}
+				break;
+			}
 		}
 	}
 	return out;

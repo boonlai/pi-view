@@ -27,7 +27,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0",
@@ -45,7 +45,7 @@
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-tui": "0.85.1",
     "@types/node": "^22.0.0",
-    "esbuild": "^0.27.4",
+    "esbuild": "^0.28.2",
     "marked": "^18.0.5",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"

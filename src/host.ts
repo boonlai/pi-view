@@ -44,6 +44,11 @@ function ompTerminal(): OmpTerminal | undefined {
   return (piTui as typeof piTui & { TERMINAL?: OmpTerminal }).TERMINAL;
 }
 
+/** True under the OMP host, whose overlay close path differs from upstream Pi. */
+export function isOmpHost(): boolean {
+  return ompTerminal() !== undefined;
+}
+
 function hostImageProtocol(): string | null | undefined {
   return ompTerminal()?.imageProtocol;
 }

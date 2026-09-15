@@ -3,14 +3,22 @@ import type { ImageSource, RasterOptions } from "./documents.ts";
 const PIXEL_LIMIT = 40_000_000;
 const IMAGE_LIMIT = 32 * 1024 * 1024;
 
+// Check XML before native parsing, including qualified tags. librsvg does not
+// execute scripts, but unsupported SVG content must not bypass resource checks.
+const SVG_FORBIDDEN = /<!DOCTYPE|<!ENTITY|<\?xml-stylesheet|@import|<(?:[^\s<>/:]+:)?(?:script|foreignObject)(?=[\s/>])/i;
+
 async function checkSvg(bytes: Buffer, signal?: AbortSignal): Promise<void> {
-  const text = bytes.toString("utf8");
-  if (!/<svg[\s>]/i.test(text)) return;
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    throw new Error("Gzip-compressed images such as SVGZ are not supported");
+  }
+  let start = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  while (bytes[start] === 9 || bytes[start] === 10 || bytes[start] === 13 || bytes[start] === 32) start++;
+  if (bytes[start] !== 60) return; // Raster metadata can contain XML; it is not the image document.
+  const text = bytes.toString("utf8", start);
   const externalUrl = [...text.matchAll(/url\(([^)]*)\)/gi)].some(match => !match[1].trim().replace(/^["']|["']$/g, "").startsWith("#"));
   const externalHref = [...text.matchAll(/(?:href|src)\s*=\s*["']([^"']*)["']/gi)]
     .some(match => !/^(?:#|data:image\/(?:png|jpeg|gif|webp);base64,)/i.test(match[1].trim()));
-  if (/<!DOCTYPE|<!ENTITY|<script[\s>]|<foreignObject[\s>]|<\?xml-stylesheet|@import/i.test(text)
-    || externalHref || externalUrl) {
+  if (SVG_FORBIDDEN.test(text) || externalHref || externalUrl) {
     throw new Error("SVG scripts, entities and external resources are not allowed");
   }
   let embeddedPixels = 0;

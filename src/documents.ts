@@ -22,6 +22,7 @@ export interface RasterOptions {
 const TEXT_LIMIT = 2 * 1024 * 1024;
 const IMAGE_LIMIT = 32 * 1024 * 1024;
 const PDF_LIMIT = 128 * 1024 * 1024;
+const REFERENCE_BUDGET = 1024 * 1024;
 const imageExtensions: Record<string, true> = { ".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true };
 
 export function safeText(text: string): string {
@@ -52,6 +53,7 @@ async function boundedRead(path: string, limit: number, signal?: AbortSignal): P
 // Walk token ranges, not a source regex: image-looking examples in code stay code.
 export function markdownBlocks(source: string): DocumentBlock[] {
   const spans: { start: number; end: number; target: string; alt: string }[] = [];
+  const usages: { start: number; href: string; title: string | null }[] = [];
   // Marked removes quote/list prefixes from child raw text. Match in the same
   // normalized coordinate space, then translate image spans back to the file.
   const prefix = /^[ \t]*(?:(?:>[ \t]?|(?:[-+*]|\d+[.)])[ \t]+)[ \t]*)*/gm;
@@ -64,6 +66,12 @@ export function markdownBlocks(source: string): DocumentBlock[] {
     normalized += stripped;
     for (let i = removed; i < line.length; i++) positions.push(match.index + i);
   }
+  function recordImage(at: number, stop: number, target: string, alt: string): void {
+    spans.push({ start: positions[at], end: positions[stop - 1] + 1, target, alt });
+  }
+  function recordUsage(at: number, href: string, title?: string | null): void {
+    usages.push({ start: positions[at], href, title: title ?? null });
+  }
   function visit(tokens: Token[], start: number, end: number): void {
     let cursor = start;
     for (const token of tokens) {
@@ -73,40 +81,109 @@ export function markdownBlocks(source: string): DocumentBlock[] {
       if (at < cursor || at + raw.length > end) continue;
       const stop = at + raw.length;
       cursor = stop;
-      if (token.type === "image") {
-        spans.push({ start: positions[at], end: positions[stop - 1] + 1, target: token.href, alt: token.text });
-      } else if (token.type !== "code" && token.type !== "codespan" && token.type !== "html") {
+      if (token.type === "image") recordImage(at, stop, token.href, token.text);
+      else if (token.type === "link" && raw.startsWith("[") && raw.endsWith("]")) recordUsage(at, token.href, token.title);
+      if (token.type !== "code" && token.type !== "codespan" && token.type !== "html") {
         if ("tokens" in token && Array.isArray(token.tokens)) visit(token.tokens, at, stop);
         if (token.type === "list") visit(token.items, at, stop);
-        if (token.type === "table") {
-          // Cells expose parsed inline tokens rather than raw block tokens.
-          let cellCursor = at;
-          for (const cell of [...token.header, ...token.rows.flat()]) {
-            const text = cell.text.replace(prefix, "");
-            const cellAt = normalized.indexOf(text, cellCursor);
-            if (cellAt >= cellCursor && cellAt < stop) {
-              visit(cell.tokens, cellAt, cellAt + text.length);
-              cellCursor = cellAt + text.length;
-            }
-          }
-        }
+        if (token.type === "table") mapCells([...token.header, ...token.rows.flat()], at, stop);
+      }
+    }
+  }
+  // Table cells arrive pipe-unescaped (marked keeps \\ and turns \| into |,
+  // splitting rows on pipes with an even backslash run): rebuild that exact
+  // unescaped text with an offset map and locate cell raws there, so mapping
+  // stays linear and cells can never match at a later duplicate occurrence.
+  function mapCells(cells: { text: string; tokens?: Token[] }[], at: number, stop: number): void {
+    const tableRaw = normalized.slice(at, stop);
+    let plain = "";
+    const map: number[] = [];
+    let slashes = 0;
+    for (let i = 0; i < tableRaw.length;) {
+      map.push(i);
+      const ch = tableRaw[i];
+      if (ch === "\\" && tableRaw[i + 1] === "|" && slashes % 2 === 0) { plain += "|"; slashes = 0; i += 2; continue; }
+      plain += ch;
+      slashes = ch === "\\" ? slashes + 1 : 0;
+      i += 1;
+    }
+    map.push(tableRaw.length);
+    let cellCursor = 0;
+    for (const cell of cells) {
+      const cellAt = plain.indexOf(cell.text, cellCursor);
+      if (cellAt < 0) continue;
+      const cellEnd = cellAt + cell.text.length;
+      cellCursor = cellEnd;
+      visitCell(cell.tokens ?? [], plain, at, map, cellAt, cellEnd);
+    }
+  }
+  function visitCell(tokens: Token[], plain: string, base: number, map: number[], start: number, end: number): void {
+    let cursor = start;
+    for (const token of tokens) {
+      const raw = token.raw;
+      if (!raw) continue;
+      const at = plain.indexOf(raw, cursor);
+      if (at < cursor || at + raw.length > end) continue;
+      const stop = at + raw.length;
+      cursor = stop;
+      if (token.type === "image") recordImage(base + map[at], base + map[stop], token.href, token.text);
+      else if (token.type === "link" && raw.startsWith("[") && raw.endsWith("]")) recordUsage(base + map[at], token.href, token.title);
+      if (token.type !== "code" && token.type !== "codespan" && token.type !== "html") {
+        if ("tokens" in token && Array.isArray(token.tokens)) visitCell(token.tokens, plain, base, map, at, stop);
       }
     }
   }
   const tokens = marked.lexer(source);
   visit(tokens, 0, normalized.length);
-  const definitions = Object.entries(tokens.links).map(([name, link]) =>
-    `[${name.replace(/[\]\\]/g, "\\$&")}]: <${link.href.replace(/>/g, "%3E")}>${link.title ? ` ${JSON.stringify(link.title)}` : ""}`).join("\n");
+  // Marked already resolved every reference, so keep only the definitions
+  // whose (href, title) each fragment actually links to rather than copying
+  // the whole table into every fragment. Documents above the budget are
+  // rejected outright instead of silently dropping reference links.
+  const definitions = new Map<string, string[]>();
+  for (const [name, link] of Object.entries(tokens.links)) {
+    const key = `${link.href}\u0000${link.title ?? ""}`;
+    const line = `[${name}]: <${link.href.replace(/>/g, "%3E")}>${link.title ? ` ${JSON.stringify(link.title)}` : ""}`;
+    const group = definitions.get(key);
+    if (group) group.push(line); else definitions.set(key, [line]);
+  }
   const blocks: DocumentBlock[] = [];
+  const fragments: { block: Extract<DocumentBlock, { kind: "text" }>; from: number; to: number }[] = [];
   let cursor = 0;
   for (const span of spans.sort((a, b) => a.start - b.start)) {
     if (span.start < cursor) continue;
-    if (span.start > cursor) blocks.push({ kind: "text", text: source.slice(cursor, span.start) });
+    if (span.start > cursor) {
+      const block: DocumentBlock = { kind: "text", text: source.slice(cursor, span.start) };
+      blocks.push(block);
+      fragments.push({ block, from: cursor, to: span.start });
+    }
     blocks.push({ kind: "image", target: span.target, alt: safeText(span.alt) });
     cursor = span.end;
   }
-  if (cursor < source.length) blocks.push({ kind: "text", text: source.slice(cursor) });
-  if (definitions) for (const block of blocks) if (block.kind === "text") block.text += `\n\n${definitions}\n`;
+  if (cursor < source.length) {
+    const block: DocumentBlock = { kind: "text", text: source.slice(cursor) };
+    blocks.push(block);
+    fragments.push({ block, from: cursor, to: source.length });
+  }
+  const sortedUsages = usages.sort((a, b) => a.start - b.start);
+  let usageCursor = 0;
+  let budget = REFERENCE_BUDGET;
+  for (const { block, from, to } of fragments) {
+    const used = new Set<string>();
+    while (usageCursor < sortedUsages.length && sortedUsages[usageCursor].start < from) usageCursor++;
+    for (let i = usageCursor; i < sortedUsages.length && sortedUsages[i].start < to; i++) {
+      used.add(`${sortedUsages[i].href}\u0000${sortedUsages[i].title ?? ""}`);
+    }
+    if (!used.size) continue;
+    const lines: string[] = [];
+    for (const key of used) {
+      for (const line of definitions.get(key) ?? []) {
+        if (line.length > budget) throw new Error(`Markdown reference definitions exceed the ${Math.round(REFERENCE_BUDGET / 1024 / 1024)} MiB expansion budget`);
+        budget -= line.length;
+        lines.push(line);
+      }
+    }
+    block.text += `\n\n${lines.join("\n")}\n`;
+  }
   return blocks;
 }
 
@@ -168,7 +245,13 @@ export async function loadImage(target: string, baseDir: string, allowRemote: bo
   } else {
     if (/^[a-z][a-z\d+.-]*:/i.test(target) && !target.startsWith("file:") && !/^[a-z]:[\\/]/i.test(target)) throw new Error("Unsupported image scheme");
     let path = target.startsWith("file:") ? fileURLToPath(target) : target;
-    if (!target.startsWith("file:")) { try { path = decodeURIComponent(path); } catch {} }
+    if (!target.startsWith("file:")) {
+      // Markdown destinations are URLs: a ?query/#fragment suffix addresses
+      // the same file, and percent escapes decode to literal file names.
+      const suffix = path.search(/[?#]/);
+      if (suffix >= 0) path = path.slice(0, suffix);
+      try { path = decodeURIComponent(path); } catch {}
+    }
     bytes = await boundedRead(resolve(baseDir, path), IMAGE_LIMIT, signal);
   }
   return decodeImage(bytes, target.startsWith("data:") ? "embedded image" : target, signal);
@@ -185,7 +268,10 @@ function run(command: string, args: string[], signal?: AbortSignal): Promise<str
   // An AbortSignal invokes execFile's callback before the process has exited.
   // Wait for close before callers remove output files or start another decoder.
   child.once("close", () => {
-    if (failure?.code === "ENOENT") reject(new Error(`${command} is missing. Install Poppler (brew install poppler / apt install poppler-utils).`));
+    if (failure?.code === "ENOENT") {
+      const poppler = command === "pdfinfo" || command === "pdftoppm" || command === "pdftotext";
+      reject(new Error(`${command} is missing${poppler ? ". Install Poppler (brew install poppler / apt install poppler-utils)." : ""}`));
+    }
     else if (failure) reject(new Error(safeText(failure.message)));
     else resolveResult(output);
   });
@@ -222,8 +308,10 @@ export async function pdfText(path: string, signal?: AbortSignal): Promise<strin
 
 export async function mediaDiagnostics(): Promise<string[]> {
   const node = process.env.PI_VIEW_NODE || (process.versions.bun ? "node" : process.execPath);
-  return Promise.all(["pdfinfo", "pdftoppm", "pdftotext", node].map(async command => {
-    try { await run(command, command === node ? ["--version"] : ["-v"]); return `${command === node ? "Node image worker" : command}: available`; }
-    catch (error) { return `${command}: ${safeText((error as Error).message)}`; }
+  return Promise.all([["pdfinfo"], ["pdftoppm"], ["pdftotext"], [node, "Node image worker"]].map(async ([command, label]) => {
+    try {
+      await run(command, label ? ["--version"] : ["-v"]);
+      return `${label ?? command}: available`;
+    } catch (error) { return `${label ?? command}: ${safeText((error as Error).message)}`; }
   }));
 }

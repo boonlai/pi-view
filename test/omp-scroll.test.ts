@@ -112,12 +112,16 @@ test("OMP fullscreen preview wheel scrolls the document, not terminal history, a
             hasUI: true,
             ui: {
               notify: () => {},
-              // Mirror the host: mount the component the factory returns via
-              // native TUI.showOverlay, and hide it again on done().
+              // Mirror OMP v18.2 showHookCustom: showOverlay captures the owned
+              // handle, onHandle delivers it to the extension, and done() hides
+              // through that handle — never a top-of-stack hideOverlay pop.
               custom: (factory, options) => {
                 const { promise, resolve } = Promise.withResolvers();
-                const component = factory(tui, theme, {}, () => { tui.hideOverlay(); resolve(undefined); });
-                tui.showOverlay(component, options?.overlayOptions);
+                let handle;
+                const done = () => { handle?.hide(); resolve(undefined); };
+                const component = factory(tui, theme, {}, done);
+                handle = tui.showOverlay(component, options?.overlayOptions);
+                options?.onHandle?.(handle);
                 return promise;
               },
             },
@@ -133,6 +137,8 @@ test("OMP fullscreen preview wheel scrolls the document, not terminal history, a
           await waitFor("wheel to reveal SCRL0040", () => term.writes.slice(writesBeforeWheel).join("").includes("SCRL0040"));
           term.key("\x1b");
           await open;
+          assert.equal(tui.hasOverlay(), false, "closing must leave no overlay mounted");
+          assert.equal(tui.getFocused(), null, "closing must leave no focused overlay");
           await waitFor("normal buffer and mouse restoration", () =>
             [1000, 1002, 1003, 1006, 1049].every(mode => !term.modes.has(mode)));
           result = { ok: true };

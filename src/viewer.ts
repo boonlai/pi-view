@@ -1,16 +1,53 @@
-import { watch, type FSWatcher } from "node:fs";
+import { unwatchFile, watchFile, type Stats } from "node:fs";
 import { stat } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { dirname } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { lexer, type Token } from "marked";
 import { getLanguageFromPath, getMarkdownTheme, highlightCode, type Theme } from "@earendil-works/pi-coding-agent";
 import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import { listDirectory, MAX_LIST_ENTRIES, type FileEntry } from "./paths.ts";
 import { loadDocument, loadImage, loadPdfPage, mediaDiagnostics, pdfText, renderRaster, safeText, type ImageSource, type PreviewDocument } from "./documents.ts";
 import { attachMouse, capabilities, createTerminalImage, type TerminalImage } from "./host.ts";
 
-type LayoutBlock = { kind: "text"; lines: string[] } | { kind: "image"; target: string; alt: string; rows: number };
+type TextUnit = { content: string; spans: { row: number; start: number; end: number }[] };
+type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
+type SearchMatch = { row: number; endRow: number };
+type SearchState = { query: string; matches: SearchMatch[] };
 type Frame = { abort: AbortController; component?: TerminalImage; error?: string };
 type LoadedImage = { image?: ImageSource; error?: string; promise?: Promise<ImageSource>; abort?: AbortController };
+
+function markdownSourceUnits(source: string): string[] {
+  const units: string[] = [];
+  let content = "";
+  const flush = (): void => {
+    const text = content.replace(/\s+/g, " ").trim();
+    if (text) units.push(text);
+    content = "";
+  };
+  const walk = (tokens: readonly Token[]): void => {
+    for (const token of tokens) {
+      if (token.type === "code") {
+        flush();
+        for (const line of token.text.split("\n")) { content = line; flush(); }
+      } else if (["br", "space", "hr", "html"].includes(token.type)) flush();
+      else if (token.type === "list") {
+        flush();
+        for (const item of token.items) { walk(item.tokens); flush(); }
+      } else if (token.type === "table") {
+        flush();
+        for (const row of [token.header, ...token.rows]) {
+          for (const cell of row) { walk(cell.tokens); flush(); }
+        }
+      } else {
+        if ("tokens" in token && Array.isArray(token.tokens)) walk(token.tokens);
+        else if ("text" in token && typeof token.text === "string") content += token.text;
+        if (token.type === "paragraph" || token.type === "heading" || token.type === "blockquote") flush();
+      }
+    }
+  };
+  for (const token of lexer(source)) { walk([token]); flush(); }
+  return units;
+}
 const HELP = `pi-view — local previews; nothing is sent to the model
 
 /view <path> or /v <path>    Tab completes files and directories
@@ -53,11 +90,12 @@ export class PreviewViewer implements Component {
   private loading = false;
   private message = "";
   private path: string;
-  private watcher?: FSWatcher;
+  private watcher?: { path: string; listener: (current: Stats, previous: Stats) => void };
   private reloadTimer?: NodeJS.Timeout;
   private detachMouse?: () => void;
   private offset = 0;
   private matchRow?: number;
+  private matchHit?: { list: SearchMatch[]; index: number };
   private horizontal = 0;
   private width = 80;
   private bodyHeight = 20;
@@ -76,7 +114,7 @@ export class PreviewViewer implements Component {
   private remoteAllowed = false;
   private remotePrompt = false;
   private panel?: string;
-  private layout?: { key: string; blocks: LayoutBlock[] };
+  private layout?: { key: string; blocks: LayoutBlock[]; search?: SearchState };
   private frames = new Map<string, Frame>();
   private images = new Map<string, LoadedImage>();
   private imageJobs: Promise<unknown> = Promise.resolve();
@@ -89,7 +127,7 @@ export class PreviewViewer implements Component {
   private picker?: { directory: string; entries: FileEntry[]; selected: number };
   private _focused = false;
 
-  constructor(private tui: TUI, private theme: Theme, private done: () => void, path: string, initial?: "help" | "diagnostics") {
+  constructor(private tui: TUI, private theme: Theme, private done: () => void, path: string, initial?: "help" | "diagnostics", private onOpen?: (path: string) => void) {
     this.path = path;
     this.detachMouse = attachMouse(tui, delta => this.wheel(delta));
     this.input.onSubmit = value => this.submitInput(value);
@@ -119,7 +157,7 @@ export class PreviewViewer implements Component {
     if (this.closed) return;
     this.closed = true;
     this.abort.abort();
-    this.watcher?.close();
+    this.stopWatching();
     clearTimeout(this.reloadTimer);
     this.detachMouse?.(); this.detachMouse = undefined;
     this.clearFrames();
@@ -135,7 +173,7 @@ export class PreviewViewer implements Component {
     clearTimeout(this.reloadTimer);
     this.abort.abort();
     const controller = this.abort = new AbortController();
-    if (path !== this.path) { this.watcher?.close(); this.watcher = undefined; }
+    if (path !== this.path) this.stopWatching();
     this.clearFrames();
     this.images.clear();
     this.loading = true;
@@ -154,7 +192,7 @@ export class PreviewViewer implements Component {
       const info = await stat(path);
       if (controller.signal.aborted) return;
       if (info.isDirectory()) {
-        this.watcher?.close(); this.watcher = undefined;
+        this.stopWatching();
         const entries = await listDirectory(path);
         if (controller.signal.aborted) return;
         this.picker = { directory: path, entries, selected: 0 };
@@ -165,6 +203,7 @@ export class PreviewViewer implements Component {
         if (controller.signal.aborted) return;
         this.document = document;
         this.picker = undefined;
+        if (!reload) this.onOpen?.(path);
         if (document.kind === "pdf") {
           this.page = Math.min(this.page, document.pages);
           if (!capabilities().protocol) this.source = true;
@@ -180,17 +219,18 @@ export class PreviewViewer implements Component {
   }
 
   private watchPath(path: string): void {
-    try {
-      this.watcher = watch(dirname(path), (_event, name) => {
-        if (name && name.toString() !== basename(path)) return;
-        clearTimeout(this.reloadTimer);
-        this.reloadTimer = setTimeout(() => { if (!this.closed) void this.open(path, true); }, 200);
-      });
-      this.watcher.on("error", () => {
-        this.watcher?.close(); this.watcher = undefined;
-        this.message = "File watching unavailable; press r to reload"; this.redraw();
-      });
-    } catch { this.message = "File watching unavailable; press r to reload"; }
+    const listener = (): void => {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = setTimeout(() => { if (!this.closed) void this.open(path, true); }, 200);
+    };
+    this.watcher = { path, listener };
+    watchFile(path, { interval: 250 }, listener);
+  }
+
+  private stopWatching(): void {
+    if (!this.watcher) return;
+    unwatchFile(this.watcher.path, this.watcher.listener);
+    this.watcher = undefined;
   }
 
   private resetZoom(): void { this.zoom = 1; this.actualSize = false; this.panX = 0.5; this.panY = 0.5; }
@@ -214,13 +254,14 @@ export class PreviewViewer implements Component {
   wheel(delta: number): void {
     if (this.closed || this.inputMode || this.remotePrompt) return;
     if (this.imageMode()) this.zoom = Math.max(0.05, Math.min(32, this.zoom * (delta < 0 ? 1.2 : 1 / 1.2)));
-    else if (this.picker) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
+    else if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
     else this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
     this.redraw();
   }
 
   handleInput(data: string): void {
     if (this.closed || isKeyRelease(data)) return;
+    const raw = data;
     const key = parseKey(data);
     if (key?.length === 1) data = key;
     else if (key && /^shift\+[a-z]$/.test(key)) data = key.slice(-1).toUpperCase();
@@ -235,7 +276,7 @@ export class PreviewViewer implements Component {
       } else this.redraw();
       return;
     }
-    if (this.inputMode) { this.input.handleInput(data); this.redraw(); return; }
+    if (this.inputMode) { this.input.handleInput(raw); this.redraw(); return; }
     if (data === "?") { this.panel = HELP; this.offset = 0; this.clearFrames(); this.redraw(true); return; }
     if (data === "d") { void this.showDiagnostics(); return; }
     if (data === "b") {
@@ -246,7 +287,7 @@ export class PreviewViewer implements Component {
     if (data === "r") { void this.open(this.path, true); return; }
     if (data === "o") { void this.open(this.picker?.directory ?? dirname(this.path)); return; }
     if (data === "R" && this.document?.kind === "markdown") { this.remotePrompt = true; this.redraw(); return; }
-    if (data === "/") { this.startInput(this.picker ? "filter" : "search"); return; }
+    if (data === "/") { this.startInput(this.picker && !this.panel ? "filter" : "search"); return; }
     if (this.picker && !this.panel) {
       const entries = this.filteredEntries();
       if (matchesKey(data, "enter") && entries[this.picker.selected]) void this.open(entries[this.picker.selected].path);
@@ -336,25 +377,40 @@ export class PreviewViewer implements Component {
     return this.picker?.entries.filter(entry => entry.name.toLowerCase().includes(this.filter.toLowerCase())) ?? [];
   }
 
-  private textLines(text: string, width: number, code = false): string[] {
+  private textLines(text: string, width: number, code = false): { lines: string[]; units: TextUnit[] } {
     const language = this.document && getLanguageFromPath(this.document.path);
     const lines = code && text.length <= 100_000 ? highlightCode(text, language) : text.split("\n");
     const digits = String(lines.length).length;
-    return lines.flatMap((line, index) => {
+    const rows: string[] = [];
+    const units: TextUnit[] = [];
+    for (const [index, line] of lines.entries()) {
       const prefix = this.numbers ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} │ `) : "";
       const indent = this.numbers ? digits + 3 : 0;
       const contentWidth = Math.max(1, width - indent);
       const expanded = line.replace(/\t/g, "    ");
+      const plain = stripVTControlCharacters(expanded);
       const wrapped = this.wrap ? wrapTextWithAnsi(expanded, contentWidth) : [expanded];
-      return wrapped.map((part, partIndex) => (partIndex === 0 ? prefix : " ".repeat(indent)) + part);
-    });
+      const unit: TextUnit = { content: plain, spans: [] };
+      let position = 0;
+      for (const [partIndex, part] of wrapped.entries()) {
+        const visible = stripVTControlCharacters(part);
+        const start = plain.startsWith(visible, position) ? position
+          : plain.startsWith(visible, position + 1) ? position + 1
+          : Math.max(0, plain.indexOf(visible, position));
+        unit.spans.push({ row: rows.length, start, end: start + visible.length });
+        rows.push((partIndex === 0 ? prefix : " ".repeat(indent)) + part);
+        position = start + visible.length;
+      }
+      units.push(unit);
+    }
+    return { lines: rows, units };
   }
 
-  private getLayout(width: number): LayoutBlock[] {
+  private getLayout(width: number): { key: string; blocks: LayoutBlock[]; search?: SearchState } {
     const key = `${width}|${this.bodyHeight}|${this.source}|${this.wrap}|${this.numbers}|${this.panel ?? ""}|${this.pdfSource ?? ""}`;
-    if (this.layout?.key === key) return this.layout.blocks;
+    if (this.layout?.key === key) return this.layout;
     let blocks: LayoutBlock[] = [];
-    if (this.panel) blocks = [{ kind: "text", lines: this.textLines(this.panel, width) }];
+    if (this.panel) blocks = [{ kind: "text", ...this.textLines(this.panel, width) }];
     else if (this.document?.kind === "markdown" && !this.source) {
       const theme = getMarkdownTheme();
       const highlight = theme.highlightCode;
@@ -362,31 +418,106 @@ export class PreviewViewer implements Component {
       const renderWidth = this.wrap ? width : Math.min(4096, this.document.source.split("\n").reduce((max, line) => Math.max(max, visibleWidth(line)), width));
       blocks = this.document.blocks.map(block => block.kind === "image"
         ? { kind: "image", target: block.target, alt: block.alt, rows: !capabilities().protocol || (!this.remoteAllowed && /^https?:\/\//i.test(block.target)) ? 1 : Math.max(2, Math.min(12, this.bodyHeight - 1)) }
-        : { kind: "text", lines: new Markdown(block.text, 0, 0, theme).render(renderWidth) });
+        : this.markdownBlock(new Markdown(block.text, 0, 0, theme).render(renderWidth), block.text));
     } else if (this.document?.kind === "text" || this.document?.kind === "markdown") {
-      blocks = [{ kind: "text", lines: this.textLines(this.document.source, width, true) }];
+      blocks = [{ kind: "text", ...this.textLines(this.document.source, width, true) }];
     } else if (this.document?.kind === "pdf" && this.source) {
-      blocks = [{ kind: "text", lines: this.textLines(this.pdfSource ?? "Extracting text…", width) }];
+      blocks = [{ kind: "text", ...this.textLines(this.pdfSource ?? "Extracting text…", width) }];
     }
     this.layout = { key, blocks };
-    return blocks;
+    return this.layout;
+  }
+
+  // Match source-derived text forward, preserving hard boundaries and the spaces
+  // dropped by wrapping.
+  // Unaligned decorations stay row-local; native span metadata would
+  // allow cross-row search there without guessing or rescanning the source.
+  private markdownBlock(rows: string[], source: string): LayoutBlock {
+    const sourceUnits = markdownSourceUnits(source);
+    const units: TextUnit[] = [];
+    let unit = 0, position = 0;
+    let open: TextUnit | undefined;
+    let openUnit = 0, start = 0, end = 0;
+    const flush = (): void => {
+      if (!open) return;
+      open.content = sourceUnits[openUnit].slice(start, end);
+      units.push(open);
+      open = undefined;
+    };
+    for (const [row, raw] of rows.entries()) {
+      const plain = stripVTControlCharacters(raw).trim();
+      if (!plain) { flush(); continue; }
+      while (unit < sourceUnits.length && position >= sourceUnits[unit].length) { unit++; position = 0; }
+      const sourceText = sourceUnits[unit];
+      const piece = plain.replace(/^(?:[│>]\s*)+/, "").replace(/^(?:[•*+-]|\d+[.)])\s+/, "");
+      const at = position + (sourceText?.[position] === " " ? 1 : 0);
+      if (piece && sourceText?.startsWith(piece, at)) {
+        if (open && openUnit !== unit) flush();
+        if (!open) { open = { content: "", spans: [] }; openUnit = unit; start = at; }
+        end = at + piece.length;
+        open.spans.push({ row, start: at - start, end: end - start });
+        position = end;
+      } else {
+        flush();
+        units.push({ content: plain, spans: [{ row, start: 0, end: plain.length }] });
+      }
+    }
+    flush();
+    return { kind: "text", lines: rows, units };
+  }
+
+  private searchState(): SearchState {
+    const layout = this.getLayout(this.width);
+    if (!layout.search || layout.search.query !== this.query) {
+      const matches: SearchMatch[] = [];
+      if (this.query.trim()) {
+        const pattern = new RegExp(this.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+        let cursor = 0;
+        for (const block of layout.blocks) {
+          const units: TextUnit[] = block.kind === "image"
+            ? [{ content: `[${block.target}]`, spans: [{ row: 0, start: 0, end: block.target.length + 2 }] }]
+            : block.units ?? [];
+          for (const unit of units) {
+            let first = 0;
+            for (const hit of unit.content.matchAll(pattern)) {
+              const end = hit.index + hit[0].length;
+              while (first < unit.spans.length && unit.spans[first].end <= hit.index) first++;
+              if (first === unit.spans.length || unit.spans[first].start >= end) continue;
+              let last = first;
+              while (last + 1 < unit.spans.length && unit.spans[last + 1].start < end) last++;
+              const row = cursor + unit.spans[first].row;
+              const endRow = cursor + unit.spans[last].row;
+              // Navigation/highlighting are row-based; repeated hits on the same
+              // visible range need neither another allocation nor another stop.
+              const previous = matches.at(-1);
+              if (!previous || previous.row !== row || previous.endRow !== endRow) matches.push({ row, endRow });
+            }
+          }
+          cursor += block.kind === "text" ? block.lines.length : block.rows;
+        }
+      }
+      layout.search = { query: this.query, matches };
+    }
+    return layout.search;
   }
 
   private findMatch(direction: number, includeCurrent = false): void {
     if (!this.query) return;
-    const rows: string[] = [];
-    for (const block of this.getLayout(this.width)) {
-      if (block.kind === "text") for (const line of block.lines) rows.push(stripVTControlCharacters(line));
-      else rows.push(`[${block.target}]`, ...Array(block.rows - 1).fill(""));
+    const { matches } = this.searchState();
+    if (!matches.length) { this.message = `No match: ${this.query}`; this.redraw(); return; }
+    let index: number;
+    if (!includeCurrent && this.matchHit?.list === matches) {
+      index = (this.matchHit.index + direction + matches.length) % matches.length;
+    } else {
+      const row = this.matchRow ?? this.offset;
+      index = direction > 0
+        ? matches.findIndex(match => includeCurrent ? match.row >= row : match.row > row)
+        : matches.findLastIndex(match => match.row < row);
+      if (index === -1) index = direction > 0 ? 0 : matches.length - 1;
     }
-    const from = includeCurrent ? this.offset : this.matchRow ?? this.offset;
-    for (let step = includeCurrent ? 0 : 1; step <= rows.length; step++) {
-      const index = (from + step * direction + rows.length) % rows.length;
-      if (rows[index]?.toLowerCase().includes(this.query.toLowerCase())) {
-        this.matchRow = index; this.offset = index; this.message = ""; this.redraw(); return;
-      }
-    }
-    this.message = `No match: ${this.query}`; this.redraw();
+    const match = matches[index];
+    this.matchHit = { list: matches, index };
+    this.matchRow = match.row; this.offset = match.row; this.message = ""; this.redraw();
   }
 
   private getImage(target: string): Promise<ImageSource> {
@@ -481,9 +612,15 @@ export class PreviewViewer implements Component {
       title += ` · ${this.actualSize ? "actual" : "fit"} ×${this.zoom.toFixed(2)}`;
       if (document?.kind === "pdf") title += ` · page ${this.page}/${document.pages}`;
     } else {
-      const blocks = this.getLayout(width);
+      const { blocks } = this.getLayout(width);
       this.totalRows = blocks.reduce((sum, block) => sum + (block.kind === "text" ? block.lines.length : block.rows), 0);
       this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset));
+      const highlighted = new Set<number>();
+      if (this.query) {
+        for (const match of this.searchState().matches) {
+          for (let row = match.row; row <= match.endRow; row++) highlighted.add(row);
+        }
+      }
       let cursor = 0;
       for (const block of blocks) {
         const count = block.kind === "text" ? block.lines.length : block.rows;
@@ -494,9 +631,9 @@ export class PreviewViewer implements Component {
             this.visibleImages.push(block.target);
             body.push(...this.imageLines(block.target, width, count, start, end - start, false, used));
           } else {
-            body.push(...block.lines.slice(start, end).map(line => {
+            body.push(...block.lines.slice(start, end).map((line, i) => {
               let shown = this.wrap ? truncateToWidth(line, width, "") : sliceByColumn(line, this.horizontal, width);
-              if (this.query && stripVTControlCharacters(line).toLowerCase().includes(this.query.toLowerCase())) shown = this.theme.bg("selectedBg", shown);
+              if (highlighted.has(cursor + start + i)) shown = this.theme.bg("selectedBg", shown);
               return shown;
             }));
           }
@@ -514,7 +651,7 @@ export class PreviewViewer implements Component {
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
     let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow · any other key: deny"
       : this.message || (this.imageMode() ? "+/- wheel: zoom · arrows: pan · 0: fit · 1: actual · b: back · ?: help · Esc: close"
-      : this.picker ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
+      : this.picker && !this.panel ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
       : "↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
     return [this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)), this.theme.fg("borderMuted", "─".repeat(width)),

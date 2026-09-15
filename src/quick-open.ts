@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { relative, sep } from "node:path";
 import { Input, matchesKey, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { completePath, resolvePath } from "./paths.ts";
+import { completePath, resolvePath, serializeValue } from "./paths.ts";
 import { safeText } from "./documents.ts";
 import { attachMouse } from "./host.ts";
 
@@ -57,7 +57,7 @@ export class QuickOpen implements Component {
   private refresh(): void {
     const value = this.input.getValue();
     this.candidates = value.length === 0
-      ? this.recent.map(path => ({ path, value: this.displayPath(path), directory: false }))
+      ? this.recent.map(path => ({ path, value: serializeValue(path), directory: false }))
       : (completePath(value, this.cwd) ?? []).flatMap(item => {
         try { return [{ path: resolvePath(item.value, this.cwd), value: item.value, directory: item.label.endsWith("/") }]; }
         catch { return []; }
@@ -85,10 +85,7 @@ export class QuickOpen implements Component {
       if (this.closed || version !== this.version) return;
       if (info.isDirectory()) {
         if (candidate?.directory) this.setValue(candidate.value);
-        else {
-          const value = `${this.displayPath(path).replace(/[\\/]$/, "")}/`;
-          this.setValue(/[\s"']/.test(value) ? JSON.stringify(value) : value);
-        }
+        else this.setValue(serializeValue(path, true));
         return;
       }
       if (!info.isFile()) throw new Error("Choose a regular file");
@@ -119,11 +116,7 @@ export class QuickOpen implements Component {
     }
     if (matchesKey(data, "tab")) {
       const candidate = this.candidates[this.selected < 0 ? 0 : this.selected];
-      if (candidate) {
-        const value = this.input.getValue().length ? candidate.value
-          : /[\s"']/.test(candidate.value) ? JSON.stringify(candidate.value) : candidate.value;
-        this.setValue(value);
-      }
+      if (candidate) this.setValue(candidate.value);
       return;
     }
     if (matchesKey(data, "enter")) { void this.choose(); return; }

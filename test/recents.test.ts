@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
@@ -108,9 +109,8 @@ test("toolCall arguments parse path/file/filePath/file_path, arrays, and nested 
 	]);
 });
 
-test("line and anchor suffixes strip; Windows drive colons do not break", async () => {
+test("line and anchor suffixes strip from text mentions", async () => {
 	const entries = [
-		userMsg("C:\\Users\\x\\nope.ts:9"),
 		userMsg("check nested/alpha.txt:42, nested/beta.md#L7-L9, plain.txt:12:3 and README.md:3-5 done"),
 	];
 	assert.deepEqual(await recentFiles(entries, tmp), [
@@ -167,4 +167,26 @@ test("large messages prefer their newest mentions and repeats do not consume loo
 	assert.deepEqual(await recentFiles([long], tmp), [F("nested/beta.md")]);
 	const repeated = userMsg(`nested/alpha.txt ${"plain.txt ".repeat(1500)}`);
 	assert.deepEqual(await recentFiles([repeated], tmp), [F("plain.txt"), F("nested/alpha.txt")]);
+});
+
+test("structured paths prefer literal names and exact preview records never fall back", { skip: process.platform === "win32" }, async () => {
+	for (const name of ["report:42", "report", "note!", "note", "missing"]) writeFileSync(F(name), "");
+	assert.deepEqual(await recentFiles([asstMsg([call({ path: "report:42" }), call({ path: "note!" })])], tmp),
+		[F("note!"), F("report:42")]);
+	assert.deepEqual(await recentFiles([viewOpen(F("report:42")), viewOpen(F("note!")), viewOpen(F("missing:42"))], tmp),
+		[F("note!"), F("report:42")]);
+	assert.deepEqual(await recentFiles([asstMsg([call({ path: "plain.txt:42:7" })])], tmp), [F("plain.txt")]);
+	mkdirSync(F("folder!")); writeFileSync(F("folder"), "");
+	symlinkSync(F("absent-target"), F("broken!")); writeFileSync(F("broken"), "");
+	assert.deepEqual(await recentFiles([asstMsg([call({ path: "folder!" }), call({ path: "broken!" })])], tmp), []);
+});
+
+test("malformed brackets and selector-like tails cannot monopolize recent scanning", () => {
+	const code = `
+		import { recentFiles } from ${JSON.stringify(new URL("../src/recents.ts", import.meta.url).href)};
+		const text = "[".repeat(100000) + " " + ".".repeat(100000) + "x " + ":1".repeat(20000) + "x plain.txt";
+		console.log(JSON.stringify(await recentFiles([{ type: "message", message: { content: text } }], ${JSON.stringify(tmp)})));
+	`;
+	const result = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 10_000 });
+	assert.deepEqual(JSON.parse(result), [F("plain.txt")]);
 });

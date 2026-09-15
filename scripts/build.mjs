@@ -1,25 +1,23 @@
 import { build } from "esbuild";
 import { watch } from "node:fs";
-import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 async function buildPackage() {
-  await build({
+  await Promise.all([
+    ["src/index.ts", "dist/index.js"],
+    ["src/image-worker.mjs", "dist/image-worker.mjs"],
+  ].map(([entry, outfile]) => build({
     absWorkingDir: root,
-    entryPoints: ["src/index.ts"],
-    outfile: "dist/index.js",
+    entryPoints: [entry],
+    outfile,
     bundle: true,
     platform: "node",
     target: "node22",
     format: "esm",
-    external: ["@earendil-works/*"],
+    external: ["@earendil-works/*", "sharp"],
     legalComments: "inline",
-  });
-  await mkdir(new URL("../dist/", import.meta.url), { recursive: true });
-  for (const name of ["image-worker.mjs", "image-codec.ts"]) {
-    await copyFile(new URL(`../src/${name}`, import.meta.url), new URL(`../dist/${name}`, import.meta.url));
-  }
+  })));
   console.log("Built pi-view");
 }
 

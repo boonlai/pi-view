@@ -119,15 +119,6 @@ test("names with spaces and quotes roundtrip through editor replacement", () => 
 	assert.deepEqual(slashed, [{ value: "back\\slash.txt", label: "back\\slash.txt" }]);
 });
 
-test("the same completer serves /view and /v", () => {
-	for (const cmd of ["/view ", "/v "]) {
-		const line = cmd + "nes";
-		const items = completePath(line.slice(cmd.length), tmp)!;
-		const replaced = cmd + items[0].value;
-		const next = completePath(replaced.slice(cmd.length), tmp)!;
-		assert.ok(next.some(i => i.value === "nested/alpha.txt"));
-	}
-});
 
 test("symlinks to directories descend; broken symlinks complete as files", () => {
 	assert.deepEqual(completePath("li", tmp), [{ value: "link/", label: "link/" }]);

@@ -12,11 +12,12 @@ import { QuickOpen } from "../src/quick-open.ts";
 initTheme("dark", false);
 const theme = getThemeByName("dark")!;
 
-async function fixture(t: { after(fn: () => void | Promise<void>): void }, count = 0) {
+async function fixture(t: { after(fn: () => void | Promise<void>): void }, count: number | string[] = 0) {
   const dir = await mkdtemp(join(tmpdir(), "pi-view-quick-"));
   const recent: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const path = join(dir, `recent-${String(i).padStart(2, "0")}.txt`);
+  const names = Array.isArray(count) ? count : Array.from({ length: count }, (_, i) => `recent-${String(i).padStart(2, "0")}.txt`);
+  for (const name of names) {
+    const path = join(dir, name);
     await writeFile(path, "content"); recent.unshift(path);
   }
   const result: (string | undefined)[] = [];
@@ -101,4 +102,27 @@ test("Escape clears typed input first and closes only when empty", async t => {
   for (const width of [1, 8, 40]) for (const line of quick.render(width)) assert.ok(visibleWidth(line) <= width);
   quick.handleInput("\x1b");
   assert.deepEqual(result, [undefined]);
+});
+
+test("Tab on a recent flag-like or literal-tilde name preserves the selected file", async t => {
+  for (const name of ["-note.txt", "~"]) {
+    const { dir, quick, result } = await fixture(t, [name]);
+    quick.handleInput("\t");
+    quick.handleInput("\r");
+    await selected(result);
+    assert.deepEqual(result, [join(dir, name)]);
+  }
+});
+
+test("Entering a quoted flag-like directory keeps subsequent completion inside it", async t => {
+  const { dir, quick, result } = await fixture(t);
+  await mkdir(join(dir, "-folder"));
+  await writeFile(join(dir, "-folder", "child.txt"), "content");
+  type(quick, '"-folder"');
+  quick.handleInput("\r");
+  for (let i = 0; i < 100 && !screen(quick).includes("child.txt"); i++) await delay(10);
+  assert.match(screen(quick), /child\.txt/);
+  quick.handleInput("\t"); quick.handleInput("\r");
+  await selected(result);
+  assert.deepEqual(result, [join(dir, "-folder", "child.txt")]);
 });

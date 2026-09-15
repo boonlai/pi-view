@@ -1,5 +1,4 @@
 // src/index.ts
-import { stat as stat5 } from "node:fs/promises";
 import { isKeyRelease as isKeyRelease2, matchesKey as matchesKey3 } from "@earendil-works/pi-tui";
 
 // src/paths.ts
@@ -30,12 +29,16 @@ function parseArg(raw) {
   }
   return { logical, flag: s.startsWith("-"), url: /^[\w+.-]+:\/\//.test(logical) };
 }
+function expandHome(value) {
+  if (value === "~") return homedir();
+  return value.startsWith("~/") || path.sep === "\\" && value.startsWith("~\\") ? path.join(homedir(), value.slice(2)) : value;
+}
 function resolvePath(args, cwd) {
   const { logical, flag, url } = parseArg(args);
   if (logical === "") throw new Error("no path given");
   if (flag) throw new Error(`flags are not supported: ${args.trim()}`);
   if (url) throw new Error(`URLs are not supported: ${args.trim()}`);
-  return path.resolve(cwd, logical === "~" ? homedir() : logical.startsWith("~/") ? path.join(homedir(), logical.slice(2)) : logical);
+  return path.resolve(cwd, expandHome(logical));
 }
 function byDirThenName(a, b2) {
   if (a.directory !== b2.directory) return a.directory ? -1 : 1;
@@ -44,21 +47,21 @@ function byDirThenName(a, b2) {
 function completePath(args, cwd) {
   const { logical, flag, url } = parseArg(args);
   if (flag || url) return null;
-  const tilde = logical === "~" || logical.startsWith("~/");
-  const sep2 = logical.lastIndexOf("/");
+  const tilde = logical === "~" || logical.startsWith("~/") || path.sep === "\\" && logical.startsWith("~\\");
+  const sep3 = Math.max(logical.lastIndexOf("/"), path.sep === "\\" ? logical.lastIndexOf("\\") : -1);
   let dirLogical;
   let base;
-  if (tilde && sep2 <= 1) {
+  if (tilde && sep3 <= 1) {
     dirLogical = "~";
-    base = sep2 === -1 ? "" : logical.slice(2);
-  } else if (sep2 === -1) {
-    dirLogical = "";
-    base = logical;
+    base = sep3 === -1 ? "" : logical.slice(2);
+  } else if (sep3 === -1) {
+    dirLogical = path.sep === "\\" && /^[A-Za-z]:/.test(logical) ? logical.slice(0, 2) : "";
+    base = logical.slice(dirLogical.length);
   } else {
-    dirLogical = logical.slice(0, sep2) || "/";
-    base = logical.slice(sep2 + 1);
+    dirLogical = logical.slice(0, sep3 + 1);
+    base = logical.slice(sep3 + 1);
   }
-  const dirAbs = dirLogical === "" ? cwd : path.resolve(cwd, dirLogical === "~" ? homedir() : dirLogical.startsWith("~/") ? path.join(homedir(), dirLogical.slice(2)) : dirLogical);
+  const dirAbs = path.resolve(cwd, expandHome(dirLogical));
   let dirents = [];
   try {
     const directory = opendirSync(dirAbs);
@@ -75,7 +78,7 @@ function completePath(args, cwd) {
     return null;
   }
   const showHidden = base.startsWith(".");
-  const head = sep2 === -1 ? tilde ? "~/" : "" : logical.slice(0, sep2 + 1);
+  const head = sep3 === -1 ? tilde ? "~/" : dirLogical : logical.slice(0, sep3 + 1);
   const rows = [];
   for (const d2 of dirents) {
     if (/[\x00-\x1f\x7f-\x9f]/.test(d2.name)) continue;
@@ -100,8 +103,8 @@ function completePath(args, cwd) {
   rows.sort(byDirThenName);
   return rows.map(({ value, label }) => ({ value, label }));
 }
-function serializeValue(full, directory) {
-  const withSep = directory ? `${full}/` : full;
+function serializeValue(full, directory = false) {
+  const withSep = directory && !full.endsWith("/") && !(path.sep === "\\" && full.endsWith("\\")) ? `${full}/` : full;
   if (!/[\s"']/.test(withSep) && !withSep.startsWith("-")) return withSep;
   return `"${withSep.replace(/[\\"]/g, "\\$&")}${directory ? "" : '"'}`;
 }
@@ -1437,7 +1440,10 @@ function pump() {
       }
     });
     current.on("error", (error) => {
-      if (worker === current) settle(new Error(`Image worker could not start: ${error.message}. Install Node.js >=22.19 or set PI_VIEW_NODE.`));
+      if (worker === current) {
+        stopping = true;
+        settle(new Error(`Image worker could not start: ${error.message}. Install Node.js >=22.19 or set PI_VIEW_NODE.`));
+      }
     });
     current.on("close", () => {
       if (worker !== current) return;
@@ -1503,6 +1509,7 @@ function stopImageWorker() {
 var TEXT_LIMIT = 2 * 1024 * 1024;
 var IMAGE_LIMIT = 32 * 1024 * 1024;
 var PDF_LIMIT = 128 * 1024 * 1024;
+var REFERENCE_BUDGET = 1024 * 1024;
 var imageExtensions = { ".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true };
 function safeText(text) {
   return stripVTControlCharacters(text.replace(/\x1b[P_^][\s\S]*?(?:\x1b\\|$)/g, "")).replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
@@ -1511,10 +1518,10 @@ async function boundedRead(path3, limit, signal) {
   signal?.throwIfAborted();
   const file = await open(path3, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
-    const stat6 = await file.stat();
-    if (!stat6.isFile()) throw new Error("Only regular files can be previewed");
-    if (stat6.size > limit) throw new Error(`File exceeds the ${Math.round(limit / 1024 / 1024)} MiB preview limit`);
-    const buffer = Buffer.alloc(Math.min(stat6.size + 1, limit + 1));
+    const stat5 = await file.stat();
+    if (!stat5.isFile()) throw new Error("Only regular files can be previewed");
+    if (stat5.size > limit) throw new Error(`File exceeds the ${Math.round(limit / 1024 / 1024)} MiB preview limit`);
+    const buffer = Buffer.alloc(Math.min(stat5.size + 1, limit + 1));
     let length = 0;
     while (length < buffer.length) {
       signal?.throwIfAborted();
@@ -1522,7 +1529,7 @@ async function boundedRead(path3, limit, signal) {
       if (!bytesRead) break;
       length += bytesRead;
     }
-    if (length > stat6.size || length > limit) throw new Error("File changed while reading; reload the preview");
+    if (length > stat5.size || length > limit) throw new Error("File changed while reading; reload the preview");
     return buffer.subarray(0, length);
   } finally {
     await file.close();
@@ -1530,6 +1537,7 @@ async function boundedRead(path3, limit, signal) {
 }
 function markdownBlocks(source) {
   const spans = [];
+  const usages = [];
   const prefix = /^[ \t]*(?:(?:>[ \t]?|(?:[-+*]|\d+[.)])[ \t]+)[ \t]*)*/gm;
   const positions = [];
   let normalized = "";
@@ -1540,6 +1548,12 @@ function markdownBlocks(source) {
     normalized += stripped;
     for (let i = removed; i < line.length; i++) positions.push(match.index + i);
   }
+  function recordImage(at, stop2, target, alt) {
+    spans.push({ start: positions[at], end: positions[stop2 - 1] + 1, target, alt });
+  }
+  function recordUsage(at, href, title) {
+    usages.push({ start: positions[at], href, title: title ?? null });
+  }
   function visit(tokens2, start, end) {
     let cursor2 = start;
     for (const token of tokens2) {
@@ -1549,41 +1563,108 @@ function markdownBlocks(source) {
       if (at < cursor2 || at + raw.length > end) continue;
       const stop2 = at + raw.length;
       cursor2 = stop2;
-      if (token.type === "image") {
-        spans.push({ start: positions[at], end: positions[stop2 - 1] + 1, target: token.href, alt: token.text });
-      } else if (token.type !== "code" && token.type !== "codespan" && token.type !== "html") {
+      if (token.type === "image") recordImage(at, stop2, token.href, token.text);
+      else if (token.type === "link" && raw.startsWith("[") && raw.endsWith("]")) recordUsage(at, token.href, token.title);
+      if (token.type !== "code" && token.type !== "codespan" && token.type !== "html") {
         if ("tokens" in token && Array.isArray(token.tokens)) visit(token.tokens, at, stop2);
         if (token.type === "list") visit(token.items, at, stop2);
-        if (token.type === "table") {
-          let cellCursor = at;
-          for (const cell of [...token.header, ...token.rows.flat()]) {
-            const text = cell.text.replace(prefix, "");
-            const cellAt = normalized.indexOf(text, cellCursor);
-            if (cellAt >= cellCursor && cellAt < stop2) {
-              visit(cell.tokens, cellAt, cellAt + text.length);
-              cellCursor = cellAt + text.length;
-            }
-          }
-        }
+        if (token.type === "table") mapCells([...token.header, ...token.rows.flat()], at, stop2);
+      }
+    }
+  }
+  function mapCells(cells, at, stop2) {
+    const tableRaw = normalized.slice(at, stop2);
+    let plain = "";
+    const map = [];
+    let slashes = 0;
+    for (let i = 0; i < tableRaw.length; ) {
+      map.push(i);
+      const ch = tableRaw[i];
+      if (ch === "\\" && tableRaw[i + 1] === "|" && slashes % 2 === 0) {
+        plain += "|";
+        slashes = 0;
+        i += 2;
+        continue;
+      }
+      plain += ch;
+      slashes = ch === "\\" ? slashes + 1 : 0;
+      i += 1;
+    }
+    map.push(tableRaw.length);
+    let cellCursor = 0;
+    for (const cell of cells) {
+      const cellAt = plain.indexOf(cell.text, cellCursor);
+      if (cellAt < 0) continue;
+      const cellEnd = cellAt + cell.text.length;
+      cellCursor = cellEnd;
+      visitCell(cell.tokens ?? [], plain, at, map, cellAt, cellEnd);
+    }
+  }
+  function visitCell(tokens2, plain, base, map, start, end) {
+    let cursor2 = start;
+    for (const token of tokens2) {
+      const raw = token.raw;
+      if (!raw) continue;
+      const at = plain.indexOf(raw, cursor2);
+      if (at < cursor2 || at + raw.length > end) continue;
+      const stop2 = at + raw.length;
+      cursor2 = stop2;
+      if (token.type === "image") recordImage(base + map[at], base + map[stop2], token.href, token.text);
+      else if (token.type === "link" && raw.startsWith("[") && raw.endsWith("]")) recordUsage(base + map[at], token.href, token.title);
+      if (token.type !== "code" && token.type !== "codespan" && token.type !== "html") {
+        if ("tokens" in token && Array.isArray(token.tokens)) visitCell(token.tokens, plain, base, map, at, stop2);
       }
     }
   }
   const tokens = g.lexer(source);
   visit(tokens, 0, normalized.length);
-  const definitions = Object.entries(tokens.links).map(([name, link]) => `[${name.replace(/[\]\\]/g, "\\$&")}]: <${link.href.replace(/>/g, "%3E")}>${link.title ? ` ${JSON.stringify(link.title)}` : ""}`).join("\n");
+  const definitions = /* @__PURE__ */ new Map();
+  for (const [name, link] of Object.entries(tokens.links)) {
+    const key = `${link.href}\0${link.title ?? ""}`;
+    const line = `[${name}]: <${link.href.replace(/>/g, "%3E")}>${link.title ? ` ${JSON.stringify(link.title)}` : ""}`;
+    const group = definitions.get(key);
+    if (group) group.push(line);
+    else definitions.set(key, [line]);
+  }
   const blocks = [];
+  const fragments = [];
   let cursor = 0;
   for (const span of spans.sort((a, b2) => a.start - b2.start)) {
     if (span.start < cursor) continue;
-    if (span.start > cursor) blocks.push({ kind: "text", text: source.slice(cursor, span.start) });
+    if (span.start > cursor) {
+      const block = { kind: "text", text: source.slice(cursor, span.start) };
+      blocks.push(block);
+      fragments.push({ block, from: cursor, to: span.start });
+    }
     blocks.push({ kind: "image", target: span.target, alt: safeText(span.alt) });
     cursor = span.end;
   }
-  if (cursor < source.length) blocks.push({ kind: "text", text: source.slice(cursor) });
-  if (definitions) {
-    for (const block of blocks) if (block.kind === "text") block.text += `
+  if (cursor < source.length) {
+    const block = { kind: "text", text: source.slice(cursor) };
+    blocks.push(block);
+    fragments.push({ block, from: cursor, to: source.length });
+  }
+  const sortedUsages = usages.sort((a, b2) => a.start - b2.start);
+  let usageCursor = 0;
+  let budget = REFERENCE_BUDGET;
+  for (const { block, from, to } of fragments) {
+    const used = /* @__PURE__ */ new Set();
+    while (usageCursor < sortedUsages.length && sortedUsages[usageCursor].start < from) usageCursor++;
+    for (let i = usageCursor; i < sortedUsages.length && sortedUsages[i].start < to; i++) {
+      used.add(`${sortedUsages[i].href}\0${sortedUsages[i].title ?? ""}`);
+    }
+    if (!used.size) continue;
+    const lines = [];
+    for (const key of used) {
+      for (const line of definitions.get(key) ?? []) {
+        if (line.length > budget) throw new Error(`Markdown reference definitions exceed the ${Math.round(REFERENCE_BUDGET / 1024 / 1024)} MiB expansion budget`);
+        budget -= line.length;
+        lines.push(line);
+      }
+    }
+    block.text += `
 
-${definitions}
+${lines.join("\n")}
 `;
   }
   return blocks;
@@ -1655,6 +1736,8 @@ async function loadImage(target, baseDir, allowRemote, signal) {
     if (/^[a-z][a-z\d+.-]*:/i.test(target) && !target.startsWith("file:") && !/^[a-z]:[\\/]/i.test(target)) throw new Error("Unsupported image scheme");
     let path3 = target.startsWith("file:") ? fileURLToPath2(target) : target;
     if (!target.startsWith("file:")) {
+      const suffix = path3.search(/[?#]/);
+      if (suffix >= 0) path3 = path3.slice(0, suffix);
       try {
         path3 = decodeURIComponent(path3);
       } catch {
@@ -1680,8 +1763,10 @@ function run(command, args, signal) {
     output = stdout;
   });
   child.once("close", () => {
-    if (failure?.code === "ENOENT") reject(new Error(`${command} is missing. Install Poppler (brew install poppler / apt install poppler-utils).`));
-    else if (failure) reject(new Error(safeText(failure.message)));
+    if (failure?.code === "ENOENT") {
+      const poppler = command === "pdfinfo" || command === "pdftoppm" || command === "pdftotext";
+      reject(new Error(`${command} is missing${poppler ? ". Install Poppler (brew install poppler / apt install poppler-utils)." : ""}`));
+    } else if (failure) reject(new Error(safeText(failure.message)));
     else resolveResult(output);
   });
   return promise;
@@ -1690,8 +1775,8 @@ async function checkPdf(path3, signal) {
   signal?.throwIfAborted();
   const file = await open(path3, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
-    const stat6 = await file.stat();
-    if (!stat6.isFile() || stat6.size > PDF_LIMIT) throw new Error("PDF must be a regular file no larger than 128 MiB");
+    const stat5 = await file.stat();
+    if (!stat5.isFile() || stat5.size > PDF_LIMIT) throw new Error("PDF must be a regular file no larger than 128 MiB");
     const signature = Buffer.alloc(5);
     await file.read(signature, 0, 5, 0);
     if (signature.toString() !== "%PDF-") throw new Error("Invalid PDF signature");
@@ -1717,20 +1802,20 @@ async function pdfText(path3, signal) {
 }
 async function mediaDiagnostics() {
   const node = process.env.PI_VIEW_NODE || (process.versions.bun ? "node" : process.execPath);
-  return Promise.all(["pdfinfo", "pdftoppm", "pdftotext", node].map(async (command) => {
+  return Promise.all([["pdfinfo"], ["pdftoppm"], ["pdftotext"], [node, "Node image worker"]].map(async ([command, label]) => {
     try {
-      await run(command, command === node ? ["--version"] : ["-v"]);
-      return `${command === node ? "Node image worker" : command}: available`;
+      await run(command, label ? ["--version"] : ["-v"]);
+      return `${label ?? command}: available`;
     } catch (error) {
-      return `${command}: ${safeText(error.message)}`;
+      return `${label ?? command}: ${safeText(error.message)}`;
     }
   }));
 }
 
 // src/viewer.ts
-import { watch } from "node:fs";
+import { unwatchFile, watchFile } from "node:fs";
 import { stat as stat2 } from "node:fs/promises";
-import { basename, dirname as dirname2 } from "node:path";
+import { dirname as dirname2 } from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
 import { getLanguageFromPath, getMarkdownTheme, highlightCode } from "@earendil-works/pi-coding-agent";
 import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -1751,6 +1836,9 @@ var KITTY_IMAGE_PROTOCOL = "\x1B_G";
 var ITERM2_IMAGE_PROTOCOL = "\x1B]1337;File=";
 function ompTerminal() {
   return piTui.TERMINAL;
+}
+function isOmpHost() {
+  return ompTerminal() !== void 0;
 }
 function hostImageProtocol() {
   return ompTerminal()?.imageProtocol;
@@ -2072,6 +2160,50 @@ function attachMouse(tui, onWheel) {
 }
 
 // src/viewer.ts
+function markdownSourceUnits(source) {
+  const units = [];
+  let content = "";
+  const flush = () => {
+    const text = content.replace(/\s+/g, " ").trim();
+    if (text) units.push(text);
+    content = "";
+  };
+  const walk = (tokens) => {
+    for (const token of tokens) {
+      if (token.type === "code") {
+        flush();
+        for (const line of token.text.split("\n")) {
+          content = line;
+          flush();
+        }
+      } else if (["br", "space", "hr", "html"].includes(token.type)) flush();
+      else if (token.type === "list") {
+        flush();
+        for (const item of token.items) {
+          walk(item.tokens);
+          flush();
+        }
+      } else if (token.type === "table") {
+        flush();
+        for (const row of [token.header, ...token.rows]) {
+          for (const cell of row) {
+            walk(cell.tokens);
+            flush();
+          }
+        }
+      } else {
+        if ("tokens" in token && Array.isArray(token.tokens)) walk(token.tokens);
+        else if ("text" in token && typeof token.text === "string") content += token.text;
+        if (token.type === "paragraph" || token.type === "heading" || token.type === "blockquote") flush();
+      }
+    }
+  };
+  for (const token of Yt(source)) {
+    walk([token]);
+    flush();
+  }
+  return units;
+}
 var HELP = `pi-view \u2014 local previews; nothing is sent to the model
 
 /view <path> or /v <path>    Tab completes files and directories
@@ -2107,10 +2239,11 @@ Ghostty forwarding if needed: keybind = super+p=csi:112;9u
 PI_VIEW_IMAGES=off forces text/path fallbacks.
 Mouse support depends on the terminal; keyboard controls always work.`;
 var PreviewViewer = class {
-  constructor(tui, theme, done, path3, initial) {
+  constructor(tui, theme, done, path3, initial, onOpen) {
     this.tui = tui;
     this.theme = theme;
     this.done = done;
+    this.onOpen = onOpen;
     this.path = path3;
     this.detachMouse = attachMouse(tui, (delta) => this.wheel(delta));
     this.input.onSubmit = (value) => this.submitInput(value);
@@ -2118,6 +2251,10 @@ var PreviewViewer = class {
     else if (initial === "diagnostics") void this.showDiagnostics();
     else void this.open(path3);
   }
+  tui;
+  theme;
+  done;
+  onOpen;
   document;
   abort = new AbortController();
   closed = false;
@@ -2129,6 +2266,7 @@ var PreviewViewer = class {
   detachMouse;
   offset = 0;
   matchRow;
+  matchHit;
   horizontal = 0;
   width = 80;
   bodyHeight = 20;
@@ -2185,7 +2323,7 @@ var PreviewViewer = class {
     if (this.closed) return;
     this.closed = true;
     this.abort.abort();
-    this.watcher?.close();
+    this.stopWatching();
     clearTimeout(this.reloadTimer);
     this.detachMouse?.();
     this.detachMouse = void 0;
@@ -2203,10 +2341,7 @@ var PreviewViewer = class {
     clearTimeout(this.reloadTimer);
     this.abort.abort();
     const controller = this.abort = new AbortController();
-    if (path3 !== this.path) {
-      this.watcher?.close();
-      this.watcher = void 0;
-    }
+    if (path3 !== this.path) this.stopWatching();
     this.clearFrames();
     this.images.clear();
     this.loading = true;
@@ -2233,8 +2368,7 @@ var PreviewViewer = class {
       const info = await stat2(path3);
       if (controller.signal.aborted) return;
       if (info.isDirectory()) {
-        this.watcher?.close();
-        this.watcher = void 0;
+        this.stopWatching();
         const entries = await listDirectory(path3);
         if (controller.signal.aborted) return;
         this.picker = { directory: path3, entries, selected: 0 };
@@ -2245,6 +2379,7 @@ var PreviewViewer = class {
         if (controller.signal.aborted) return;
         this.document = document;
         this.picker = void 0;
+        if (!reload) this.onOpen?.(path3);
         if (document.kind === "pdf") {
           this.page = Math.min(this.page, document.pages);
           if (!capabilities().protocol) this.source = true;
@@ -2262,23 +2397,19 @@ var PreviewViewer = class {
     }
   }
   watchPath(path3) {
-    try {
-      this.watcher = watch(dirname2(path3), (_event, name) => {
-        if (name && name.toString() !== basename(path3)) return;
-        clearTimeout(this.reloadTimer);
-        this.reloadTimer = setTimeout(() => {
-          if (!this.closed) void this.open(path3, true);
-        }, 200);
-      });
-      this.watcher.on("error", () => {
-        this.watcher?.close();
-        this.watcher = void 0;
-        this.message = "File watching unavailable; press r to reload";
-        this.redraw();
-      });
-    } catch {
-      this.message = "File watching unavailable; press r to reload";
-    }
+    const listener = () => {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = setTimeout(() => {
+        if (!this.closed) void this.open(path3, true);
+      }, 200);
+    };
+    this.watcher = { path: path3, listener };
+    watchFile(path3, { interval: 250 }, listener);
+  }
+  stopWatching() {
+    if (!this.watcher) return;
+    unwatchFile(this.watcher.path, this.watcher.listener);
+    this.watcher = void 0;
   }
   resetZoom() {
     this.zoom = 1;
@@ -2305,12 +2436,13 @@ var PreviewViewer = class {
   wheel(delta) {
     if (this.closed || this.inputMode || this.remotePrompt) return;
     if (this.imageMode()) this.zoom = Math.max(0.05, Math.min(32, this.zoom * (delta < 0 ? 1.2 : 1 / 1.2)));
-    else if (this.picker) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
+    else if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
     else this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
     this.redraw();
   }
   handleInput(data) {
     if (this.closed || isKeyRelease(data)) return;
+    const raw = data;
     const key = parseKey(data);
     if (key?.length === 1) data = key;
     else if (key && /^shift\+[a-z]$/.test(key)) data = key.slice(-1).toUpperCase();
@@ -2333,7 +2465,7 @@ var PreviewViewer = class {
       return;
     }
     if (this.inputMode) {
-      this.input.handleInput(data);
+      this.input.handleInput(raw);
       this.redraw();
       return;
     }
@@ -2371,7 +2503,7 @@ var PreviewViewer = class {
       return;
     }
     if (data === "/") {
-      this.startInput(this.picker ? "filter" : "search");
+      this.startInput(this.picker && !this.panel ? "filter" : "search");
       return;
     }
     if (this.picker && !this.panel) {
@@ -2509,53 +2641,145 @@ var PreviewViewer = class {
     const language = this.document && getLanguageFromPath(this.document.path);
     const lines = code && text.length <= 1e5 ? highlightCode(text, language) : text.split("\n");
     const digits = String(lines.length).length;
-    return lines.flatMap((line, index) => {
+    const rows = [];
+    const units = [];
+    for (const [index, line] of lines.entries()) {
       const prefix = this.numbers ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} \u2502 `) : "";
       const indent = this.numbers ? digits + 3 : 0;
       const contentWidth = Math.max(1, width - indent);
       const expanded = line.replace(/\t/g, "    ");
+      const plain = stripVTControlCharacters2(expanded);
       const wrapped = this.wrap ? wrapTextWithAnsi(expanded, contentWidth) : [expanded];
-      return wrapped.map((part, partIndex) => (partIndex === 0 ? prefix : " ".repeat(indent)) + part);
-    });
+      const unit = { content: plain, spans: [] };
+      let position = 0;
+      for (const [partIndex, part] of wrapped.entries()) {
+        const visible = stripVTControlCharacters2(part);
+        const start = plain.startsWith(visible, position) ? position : plain.startsWith(visible, position + 1) ? position + 1 : Math.max(0, plain.indexOf(visible, position));
+        unit.spans.push({ row: rows.length, start, end: start + visible.length });
+        rows.push((partIndex === 0 ? prefix : " ".repeat(indent)) + part);
+        position = start + visible.length;
+      }
+      units.push(unit);
+    }
+    return { lines: rows, units };
   }
   getLayout(width) {
     const key = `${width}|${this.bodyHeight}|${this.source}|${this.wrap}|${this.numbers}|${this.panel ?? ""}|${this.pdfSource ?? ""}`;
-    if (this.layout?.key === key) return this.layout.blocks;
+    if (this.layout?.key === key) return this.layout;
     let blocks = [];
-    if (this.panel) blocks = [{ kind: "text", lines: this.textLines(this.panel, width) }];
+    if (this.panel) blocks = [{ kind: "text", ...this.textLines(this.panel, width) }];
     else if (this.document?.kind === "markdown" && !this.source) {
       const theme = getMarkdownTheme();
       const highlight = theme.highlightCode;
       theme.highlightCode = (code, lang) => code.length <= 1e5 && highlight ? highlight(code, lang) : code.split("\n");
       const renderWidth = this.wrap ? width : Math.min(4096, this.document.source.split("\n").reduce((max, line) => Math.max(max, visibleWidth(line)), width));
-      blocks = this.document.blocks.map((block) => block.kind === "image" ? { kind: "image", target: block.target, alt: block.alt, rows: !capabilities().protocol || !this.remoteAllowed && /^https?:\/\//i.test(block.target) ? 1 : Math.max(2, Math.min(12, this.bodyHeight - 1)) } : { kind: "text", lines: new Markdown(block.text, 0, 0, theme).render(renderWidth) });
+      blocks = this.document.blocks.map((block) => block.kind === "image" ? { kind: "image", target: block.target, alt: block.alt, rows: !capabilities().protocol || !this.remoteAllowed && /^https?:\/\//i.test(block.target) ? 1 : Math.max(2, Math.min(12, this.bodyHeight - 1)) } : this.markdownBlock(new Markdown(block.text, 0, 0, theme).render(renderWidth), block.text));
     } else if (this.document?.kind === "text" || this.document?.kind === "markdown") {
-      blocks = [{ kind: "text", lines: this.textLines(this.document.source, width, true) }];
+      blocks = [{ kind: "text", ...this.textLines(this.document.source, width, true) }];
     } else if (this.document?.kind === "pdf" && this.source) {
-      blocks = [{ kind: "text", lines: this.textLines(this.pdfSource ?? "Extracting text\u2026", width) }];
+      blocks = [{ kind: "text", ...this.textLines(this.pdfSource ?? "Extracting text\u2026", width) }];
     }
     this.layout = { key, blocks };
-    return blocks;
+    return this.layout;
+  }
+  // Match source-derived text forward, preserving hard boundaries and the spaces
+  // dropped by wrapping.
+  // Unaligned decorations stay row-local; native span metadata would
+  // allow cross-row search there without guessing or rescanning the source.
+  markdownBlock(rows, source) {
+    const sourceUnits = markdownSourceUnits(source);
+    const units = [];
+    let unit = 0, position = 0;
+    let open2;
+    let openUnit = 0, start = 0, end = 0;
+    const flush = () => {
+      if (!open2) return;
+      open2.content = sourceUnits[openUnit].slice(start, end);
+      units.push(open2);
+      open2 = void 0;
+    };
+    for (const [row, raw] of rows.entries()) {
+      const plain = stripVTControlCharacters2(raw).trim();
+      if (!plain) {
+        flush();
+        continue;
+      }
+      while (unit < sourceUnits.length && position >= sourceUnits[unit].length) {
+        unit++;
+        position = 0;
+      }
+      const sourceText = sourceUnits[unit];
+      const piece = plain.replace(/^(?:[│>]\s*)+/, "").replace(/^(?:[•*+-]|\d+[.)])\s+/, "");
+      const at = position + (sourceText?.[position] === " " ? 1 : 0);
+      if (piece && sourceText?.startsWith(piece, at)) {
+        if (open2 && openUnit !== unit) flush();
+        if (!open2) {
+          open2 = { content: "", spans: [] };
+          openUnit = unit;
+          start = at;
+        }
+        end = at + piece.length;
+        open2.spans.push({ row, start: at - start, end: end - start });
+        position = end;
+      } else {
+        flush();
+        units.push({ content: plain, spans: [{ row, start: 0, end: plain.length }] });
+      }
+    }
+    flush();
+    return { kind: "text", lines: rows, units };
+  }
+  searchState() {
+    const layout = this.getLayout(this.width);
+    if (!layout.search || layout.search.query !== this.query) {
+      const matches = [];
+      if (this.query.trim()) {
+        const pattern = new RegExp(this.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+        let cursor = 0;
+        for (const block of layout.blocks) {
+          const units = block.kind === "image" ? [{ content: `[${block.target}]`, spans: [{ row: 0, start: 0, end: block.target.length + 2 }] }] : block.units ?? [];
+          for (const unit of units) {
+            let first = 0;
+            for (const hit of unit.content.matchAll(pattern)) {
+              const end = hit.index + hit[0].length;
+              while (first < unit.spans.length && unit.spans[first].end <= hit.index) first++;
+              if (first === unit.spans.length || unit.spans[first].start >= end) continue;
+              let last = first;
+              while (last + 1 < unit.spans.length && unit.spans[last + 1].start < end) last++;
+              const row = cursor + unit.spans[first].row;
+              const endRow = cursor + unit.spans[last].row;
+              const previous = matches.at(-1);
+              if (!previous || previous.row !== row || previous.endRow !== endRow) matches.push({ row, endRow });
+            }
+          }
+          cursor += block.kind === "text" ? block.lines.length : block.rows;
+        }
+      }
+      layout.search = { query: this.query, matches };
+    }
+    return layout.search;
   }
   findMatch(direction, includeCurrent = false) {
     if (!this.query) return;
-    const rows = [];
-    for (const block of this.getLayout(this.width)) {
-      if (block.kind === "text") for (const line of block.lines) rows.push(stripVTControlCharacters2(line));
-      else rows.push(`[${block.target}]`, ...Array(block.rows - 1).fill(""));
+    const { matches } = this.searchState();
+    if (!matches.length) {
+      this.message = `No match: ${this.query}`;
+      this.redraw();
+      return;
     }
-    const from = includeCurrent ? this.offset : this.matchRow ?? this.offset;
-    for (let step = includeCurrent ? 0 : 1; step <= rows.length; step++) {
-      const index = (from + step * direction + rows.length) % rows.length;
-      if (rows[index]?.toLowerCase().includes(this.query.toLowerCase())) {
-        this.matchRow = index;
-        this.offset = index;
-        this.message = "";
-        this.redraw();
-        return;
-      }
+    let index;
+    if (!includeCurrent && this.matchHit?.list === matches) {
+      index = (this.matchHit.index + direction + matches.length) % matches.length;
+    } else {
+      const row = this.matchRow ?? this.offset;
+      index = direction > 0 ? matches.findIndex((match2) => includeCurrent ? match2.row >= row : match2.row > row) : matches.findLastIndex((match2) => match2.row < row);
+      if (index === -1) index = direction > 0 ? 0 : matches.length - 1;
     }
-    this.message = `No match: ${this.query}`;
+    const match = matches[index];
+    this.matchHit = { list: matches, index };
+    this.matchRow = match.row;
+    this.offset = match.row;
+    this.message = "";
     this.redraw();
   }
   getImage(target) {
@@ -2667,9 +2891,15 @@ var PreviewViewer = class {
       title += ` \xB7 ${this.actualSize ? "actual" : "fit"} \xD7${this.zoom.toFixed(2)}`;
       if (document?.kind === "pdf") title += ` \xB7 page ${this.page}/${document.pages}`;
     } else {
-      const blocks = this.getLayout(width);
+      const { blocks } = this.getLayout(width);
       this.totalRows = blocks.reduce((sum, block) => sum + (block.kind === "text" ? block.lines.length : block.rows), 0);
       this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset));
+      const highlighted = /* @__PURE__ */ new Set();
+      if (this.query) {
+        for (const match of this.searchState().matches) {
+          for (let row = match.row; row <= match.endRow; row++) highlighted.add(row);
+        }
+      }
       let cursor = 0;
       for (const block of blocks) {
         const count = block.kind === "text" ? block.lines.length : block.rows;
@@ -2680,9 +2910,9 @@ var PreviewViewer = class {
             this.visibleImages.push(block.target);
             body.push(...this.imageLines(block.target, width, count, start, end - start, false, used));
           } else {
-            body.push(...block.lines.slice(start, end).map((line) => {
+            body.push(...block.lines.slice(start, end).map((line, i) => {
               let shown = this.wrap ? truncateToWidth(line, width, "") : sliceByColumn(line, this.horizontal, width);
-              if (this.query && stripVTControlCharacters2(line).toLowerCase().includes(this.query.toLowerCase())) shown = this.theme.bg("selectedBg", shown);
+              if (highlighted.has(cursor + start + i)) shown = this.theme.bg("selectedBg", shown);
               return shown;
             }));
           }
@@ -2705,7 +2935,7 @@ var PreviewViewer = class {
       }
     }
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
-    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? "+/- wheel: zoom \xB7 arrows: pan \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 ?: help \xB7 Esc: close" : this.picker ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
+    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? "+/- wheel: zoom \xB7 arrows: pan \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 ?: help \xB7 Esc: close" : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
     return [
       this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)),
@@ -2720,7 +2950,7 @@ var PreviewViewer = class {
 // src/quick-open.ts
 import { stat as stat3 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
-import { relative, sep } from "node:path";
+import { relative, sep as sep2 } from "node:path";
 import { Input as Input2, matchesKey as matchesKey2, truncateToWidth as truncateToWidth2 } from "@earendil-works/pi-tui";
 var QuickOpen = class {
   constructor(tui, theme, cwd, recent, done) {
@@ -2744,6 +2974,10 @@ var QuickOpen = class {
       this.refresh();
     });
   }
+  tui;
+  theme;
+  cwd;
+  done;
   input = new Input2();
   recent = [];
   candidates = [];
@@ -2779,14 +3013,14 @@ var QuickOpen = class {
   }
   displayPath(path3) {
     const local = relative(this.cwd, path3);
-    if (local && local !== ".." && !local.startsWith(`..${sep}`) && !local.startsWith(sep)) return local;
+    if (local && local !== ".." && !local.startsWith(`..${sep2}`) && !local.startsWith(sep2)) return local;
     const home = homedir2();
-    if (path3.startsWith(`${home}${sep}`)) return `~/${path3.slice(home.length + 1)}`;
+    if (path3.startsWith(`${home}${sep2}`)) return `~/${path3.slice(home.length + 1)}`;
     return path3;
   }
   refresh() {
     const value = this.input.getValue();
-    this.candidates = value.length === 0 ? this.recent.map((path3) => ({ path: path3, value: this.displayPath(path3), directory: false })) : (completePath(value, this.cwd) ?? []).flatMap((item) => {
+    this.candidates = value.length === 0 ? this.recent.map((path3) => ({ path: path3, value: serializeValue(path3), directory: false })) : (completePath(value, this.cwd) ?? []).flatMap((item) => {
       try {
         return [{ path: resolvePath(item.value, this.cwd), value: item.value, directory: item.label.endsWith("/") }];
       } catch {
@@ -2815,10 +3049,7 @@ var QuickOpen = class {
       if (this.closed || version !== this.version) return;
       if (info.isDirectory()) {
         if (candidate?.directory) this.setValue(candidate.value);
-        else {
-          const value = `${this.displayPath(path3).replace(/[\\/]$/, "")}/`;
-          this.setValue(/[\s"']/.test(value) ? JSON.stringify(value) : value);
-        }
+        else this.setValue(serializeValue(path3, true));
         return;
       }
       if (!info.isFile()) throw new Error("Choose a regular file");
@@ -2856,10 +3087,7 @@ var QuickOpen = class {
     }
     if (matchesKey2(data, "tab")) {
       const candidate = this.candidates[this.selected < 0 ? 0 : this.selected];
-      if (candidate) {
-        const value = this.input.getValue().length ? candidate.value : /[\s"']/.test(candidate.value) ? JSON.stringify(candidate.value) : candidate.value;
-        this.setValue(value);
-      }
+      if (candidate) this.setValue(candidate.value);
       return;
     }
     if (matchesKey2(data, "enter")) {
@@ -2905,7 +3133,7 @@ var QuickOpen = class {
 };
 
 // src/recents.ts
-import { realpath, stat as stat4 } from "node:fs/promises";
+import { lstat, realpath, stat as stat4 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import * as path2 from "node:path";
@@ -2917,18 +3145,35 @@ var MAX_ARG_DEPTH = 2;
 var MAX_ARRAY_ITEMS = 64;
 var ARG_KEYS = ["path", "file", "filePath", "file_path"];
 var VIEW_OPEN_TYPE = "pi-view-open";
-var MENTION_RE = /\[[^\]\n]*\]\(([^()\s]+)\)|`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|([^\s'"`()[\]<>|,;]+)/g;
-var LINE_SUFFIX_RE = /(?:[:#]L?\d+(?::\d+)?(?:-L?\d+)*)+$/;
-var TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]+$/;
+var MENTION_RE = /\[[^[\]\n]*\]\(([^()\s]+)\)|`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|([^\s'"`()[\]<>|,;]+)/g;
+var TRAILING_PUNCT_RE = /[.,;:!?)\]}>'"]/;
 var WIN_DRIVE_RE = /^[A-Za-z]:[\\/]/;
 var SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 var EXT_RE = /\.[A-Za-z][A-Za-z0-9]{0,11}$/;
+function cleanMention(raw) {
+  const text = raw.trim();
+  let cursor = text.length;
+  while (cursor > 0 && TRAILING_PUNCT_RE.test(text[cursor - 1])) cursor--;
+  let cut = cursor;
+  while (cursor > 0) {
+    const end = cursor;
+    while (cursor > 0 && text.charCodeAt(cursor - 1) >= 48 && text.charCodeAt(cursor - 1) <= 57) cursor--;
+    if (cursor === end) break;
+    if (text[cursor - 1] === "L") cursor--;
+    const separator = text[cursor - 1];
+    if (separator === ":" || separator === "#") cut = --cursor;
+    else if (separator === "-") cursor--;
+    else break;
+  }
+  while (cut > 0 && TRAILING_PUNCT_RE.test(text[cut - 1])) cut--;
+  return text.slice(0, cut).trim();
+}
 function scanTextMentions(text, out) {
   if (text.length > MAX_TEXT_CHARS) text = text.slice(-MAX_TEXT_CHARS);
   for (const m2 of text.matchAll(MENTION_RE)) {
     const raw = m2[1] ?? m2[2] ?? m2[3] ?? m2[4] ?? m2[5];
     if (raw === void 0) continue;
-    const s = raw.replace(TRAILING_PUNCT_RE, "").replace(LINE_SUFFIX_RE, "").replace(TRAILING_PUNCT_RE, "").trim();
+    const s = cleanMention(raw);
     if (s === "") continue;
     const bare = m2[5] !== void 0;
     if (bare && (s.startsWith("-") || !/[\\/]/.test(s) && !EXT_RE.test(s))) continue;
@@ -2989,7 +3234,7 @@ function entryMentions(entry) {
   return out.reverse();
 }
 function toAbsolutePath(raw, cwd) {
-  const s = raw.replace(TRAILING_PUNCT_RE, "").replace(LINE_SUFFIX_RE, "").replace(TRAILING_PUNCT_RE, "").trim();
+  const s = raw;
   if (s === "") return null;
   if (WIN_DRIVE_RE.test(s)) return path2.resolve(s);
   const scheme = SCHEME_RE.exec(s);
@@ -3010,22 +3255,51 @@ function toAbsolutePath(raw, cwd) {
 }
 async function recentFiles(entries, cwd) {
   const out = [];
-  const seenForms = /* @__PURE__ */ new Set();
+  const seenForms = /* @__PURE__ */ new Map();
   const seenReal = /* @__PURE__ */ new Set();
   let budget = MAX_CANDIDATES;
   const start = Math.max(0, entries.length - MAX_ENTRIES);
   for (let i = entries.length - 1; i >= start; i--) {
-    for (const raw of entryMentions(entries[i])) {
-      const abs = toAbsolutePath(raw, cwd);
-      if (abs === null || seenForms.has(abs)) continue;
-      seenForms.add(abs);
-      if (budget-- <= 0) return out;
-      const [st2, rp] = await Promise.all([stat4(abs).catch(() => null), realpath(abs).catch(() => null)]);
-      if (st2 === null || rp === null || !st2.isFile()) continue;
-      if (seenReal.has(rp)) continue;
-      seenReal.add(rp);
-      out.push(abs);
-      if (out.length >= MAX_RECENT_FILES) return out;
+    const entry = entries[i];
+    const exact = entry?.type === "custom" && entry.customType === VIEW_OPEN_TYPE;
+    for (const raw of entryMentions(entry)) {
+      const literal = exact || !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw) ? path2.resolve(cwd, raw) : toAbsolutePath(raw, cwd);
+      const forms = exact ? [literal] : [literal, toAbsolutePath(cleanMention(raw), cwd)];
+      for (const abs of forms) {
+        if (abs === null) continue;
+        if (seenForms.has(abs)) {
+          if (seenForms.get(abs)) break;
+          continue;
+        }
+        if (budget-- <= 0) return out;
+        let info;
+        try {
+          info = await lstat(abs);
+        } catch (error) {
+          const code = error.code;
+          const missing = code === "ENOENT" || code === "ENOTDIR" || code === "ENAMETOOLONG";
+          seenForms.set(abs, !missing);
+          if (!missing) break;
+          continue;
+        }
+        seenForms.set(abs, true);
+        if (info.isSymbolicLink()) {
+          try {
+            info = await stat4(abs);
+          } catch {
+            break;
+          }
+        }
+        if (!info.isFile()) break;
+        const rp = await realpath(abs).catch(() => null);
+        if (rp === null) break;
+        if (!seenReal.has(rp)) {
+          seenReal.add(rp);
+          out.push(abs);
+          if (out.length >= MAX_RECENT_FILES) return out;
+        }
+        break;
+      }
     }
   }
   return out;
@@ -3033,23 +3307,40 @@ async function recentFiles(entries, cwd) {
 
 // src/index.ts
 var fullscreen = { fullscreen: true };
+var overlayClaim = { render: () => [], invalidate: () => {
+} };
+function closeOwned(tui, handle, done) {
+  if (isOmpHost()) {
+    done();
+    return;
+  }
+  handle?.hide();
+  const claim = tui.showOverlay(overlayClaim, { nonCapturing: true });
+  try {
+    done();
+  } finally {
+    claim.hide();
+  }
+}
 function piView(pi) {
   let cwd = process.cwd();
-  let closePreview;
-  let closeQuick;
-  let detachShortcut;
   let quickPending = false;
   let providerInstalled = false;
+  let lifetime = 0;
+  let detachShortcut;
+  let closePreview;
+  let closeQuick;
   const completions = (args) => args.startsWith("--") ? ["--help", "--diagnostics"].filter((value) => value.startsWith(args)).map((value) => ({ value, label: value })) : completePath(args, cwd);
+  const recordOpen = (path3) => {
+    try {
+      pi.appendEntry("pi-view-open", { path: path3 });
+    } catch {
+    }
+  };
   async function showPreview(ctx, path3, initial) {
     closePreview?.();
-    if (!initial) {
-      try {
-        if ((await stat5(path3)).isFile()) pi.appendEntry("pi-view-open", { path: path3 });
-      } catch {
-      }
-    }
     let viewer;
+    let handle;
     let localClose;
     try {
       await ctx.ui.custom((tui, theme, _keys, done) => {
@@ -3059,12 +3350,18 @@ function piView(pi) {
           ended = true;
           viewer?.dispose();
           if (closePreview === localClose) closePreview = void 0;
-          done();
+          closeOwned(tui, handle, done);
         };
-        viewer = new PreviewViewer(tui, theme, localClose, path3, initial);
+        viewer = new PreviewViewer(tui, theme, localClose, path3, initial, recordOpen);
         closePreview = localClose;
         return viewer;
-      }, { overlay: true, overlayOptions: { ...fullscreen, width: "100%", maxHeight: "100%", anchor: "top-left", row: 0, col: 0 } });
+      }, {
+        overlay: true,
+        overlayOptions: { ...fullscreen, width: "100%", maxHeight: "100%", anchor: "top-left", row: 0, col: 0 },
+        onHandle: (received) => {
+          handle = received;
+        }
+      });
     } finally {
       viewer?.dispose();
       if (closePreview === localClose) closePreview = void 0;
@@ -3073,7 +3370,9 @@ function piView(pi) {
   async function showQuick(ctx) {
     if (quickPending || !ctx.hasUI) return;
     quickPending = true;
+    const requested = lifetime;
     let quick;
+    let handle;
     let picked;
     try {
       picked = await ctx.ui.custom((tui, theme, _keys, done) => {
@@ -3083,21 +3382,31 @@ function piView(pi) {
           ended = true;
           quick?.dispose();
           closeQuick = void 0;
-          done(path3);
+          closeOwned(tui, handle, () => done(path3));
         };
         closeQuick = () => finish();
         quick = new QuickOpen(tui, theme, ctx.cwd, recentFiles(ctx.sessionManager.getBranch(), ctx.cwd), finish);
         return quick;
-      }, { overlay: true, overlayOptions: { ...fullscreen, width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 } });
+      }, {
+        overlay: true,
+        overlayOptions: { ...fullscreen, width: "80%", maxHeight: "90%", anchor: "top-center", row: 2 },
+        onHandle: (received) => {
+          handle = received;
+        }
+      });
     } finally {
       quick?.dispose();
       closeQuick = void 0;
       quickPending = false;
     }
+    if (picked && lifetime !== requested) picked = void 0;
     if (picked) await showPreview(ctx, picked);
   }
   pi.on("session_start", (_event, ctx) => {
+    lifetime++;
     cwd = ctx.cwd;
+    closePreview?.();
+    closeQuick?.();
     detachShortcut?.();
     if (!ctx.hasUI) return;
     detachShortcut = ctx.ui.onTerminalInput((data) => {
@@ -3123,6 +3432,7 @@ function piView(pi) {
     }
   });
   pi.on("session_shutdown", () => {
+    lifetime++;
     detachShortcut?.();
     closeQuick?.();
     closePreview?.();

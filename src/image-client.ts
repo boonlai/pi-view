@@ -63,7 +63,10 @@ function pump(): void {
       } catch (error) { stop(error as Error); }
     });
     current.on("error", error => {
-      if (worker === current) settle(new Error(`Image worker could not start: ${error.message}. Install Node.js >=22.19 or set PI_VIEW_NODE.`));
+      if (worker === current) {
+        stopping = true;
+        settle(new Error(`Image worker could not start: ${error.message}. Install Node.js >=22.19 or set PI_VIEW_NODE.`));
+      }
     });
     current.on("close", () => {
       if (worker !== current) return;

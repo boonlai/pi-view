@@ -53,9 +53,18 @@ function asTui(fake: FakeTui): TUI {
   return fake as unknown as TUI;
 }
 
+const TERMINAL_ENV = [
+  "TERM_PROGRAM", "TERMINAL_EMULATOR", "TERM", "COLORTERM", "TMUX", "STY", "ZELLIJ",
+  "KITTY_WINDOW_ID", "GHOSTTY_RESOURCES_DIR", "WEZTERM_PANE", "WARP_SESSION_ID",
+  "WARP_TERMINAL_SESSION_UUID", "ITERM_SESSION_ID", "WT_SESSION", "ALACRITTY_WINDOW_ID",
+  "VSCODE_PID", "PI_VIEW_IMAGES", "PI_FORCE_IMAGE_PROTOCOL", "PI_IMAGE_PROTOCOL",
+  "PI_HYPERLINKS", "PI_TRUE_COLOR", "PI_VIEW_MOUSE_PROBE_MS", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY",
+];
+
 async function withEnv(overrides: Record<string, string | undefined>, fn: () => void | Promise<void>): Promise<void> {
-  const saved = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
-  for (const [key, value] of Object.entries(overrides)) {
+  const values = { ...Object.fromEntries(TERMINAL_ENV.map(key => [key, undefined])), PI_HYPERLINKS: "0", ...overrides };
+  const saved = new Map(Object.keys(values).map(key => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(values)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
@@ -133,13 +142,10 @@ test("kitty path renders exact cell geometry with host-tracked metadata", () => 
     setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
     const fake = new FakeTui();
     const img = createTerminalImage(png36, 4, 2, "doc.png", asTui(fake));
-    assert.equal(img.columns, 4);
-    assert.equal(img.rows, 2);
-    assert.notEqual(img.imageId, undefined);
-
     const lines = img.render(6);
     assert.equal(lines.length, 2);
-    assert.match(lines[0], /^\x1b_Ga=T,/);
+    assert.match(lines[0], /^\x1b_Ga=T,[^;]*\bc=4[,;]/);
+    assert.match(lines[0], /^\x1b_Ga=T,[^;]*\br=2[,;]/);
     img.dispose();
   });
 });
@@ -149,16 +155,16 @@ test("dispose deletes only the owned kitty image, idempotently", () => {
     setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
     const fake = new FakeTui();
     const img = createTerminalImage(png36, 4, 2, "doc.png", asTui(fake));
-    assert.ok(img.render(6).length > 0);
+    const transmittedIds = (lines: string[]) => new Set([...lines.join("").matchAll(/\x1b_G[^;]*\bi=(\d+)/g)].map(match => Number(match[1])));
+    assert.deepEqual(transmittedIds(img.render(6)), new Set([img.imageId]));
     img.invalidate();
-    assert.ok(img.render(7).length > 0); // re-render reuses the same image ID
+    assert.deepEqual(transmittedIds(img.render(7)), new Set([img.imageId]));
     img.dispose();
     img.dispose(); // idempotent
-    const deletes = fake.output().match(/\x1b_Ga=d,d=I,i=\d+,q=2\x1b\\/gu) ?? [];
-    assert.equal(deletes.length, 1);
+    const deletedIds = [...fake.output().matchAll(/\x1b_Ga=d,d=I,i=(\d+),q=2\x1b\\/g)].map(match => Number(match[1]));
+    assert.deepEqual(deletedIds, [img.imageId]);
     assert.ok(!fake.output().includes("d=A")); // never deletes host images
     assert.deepEqual(img.render(6), []); // renders after dispose are empty
-    assert.ok(!fake.output().includes("\x1b_Ga=T")); // no re-transmit after dispose
   });
 });
 

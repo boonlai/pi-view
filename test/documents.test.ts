@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, rm, writeFile, truncate } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
+import { marked, type Token } from "marked";
 import { loadDocument, loadImage, loadPdfPage, markdownBlocks, mediaDiagnostics, pdfText, renderRaster, safeText } from "../src/documents.ts";
 
 async function fixture(t: { after(fn: () => Promise<void>): void }): Promise<string> {
@@ -49,7 +51,95 @@ test("Quoted and indented Markdown images retain references across split text bl
   assert.deepEqual(blocks.filter(block => block.kind === "image").map(block => block.target), ["quote.png", "list.svg", "last.png"]);
   const first = blocks[0];
   assert.equal(first.kind, "text");
-  if (first.kind === "text") assert.match(first.text, /\[ref\]: <https:\/\/example.com>/);
+  if (first.kind === "text") assert.equal(marked.lexer(first.text).links["ref"]?.href, "https://example.com");
+});
+
+test("Escaped pipes in table cells and header alts still expose images", () => {
+  const row = markdownBlocks("| Description |\n| --- |\n| foo\\|bar ![alt](pic.png) |");
+  assert.deepEqual(row.filter(block => block.kind === "image").map(block => block.target), ["pic.png"]);
+  const header = markdownBlocks("| ![a\\|b](x.png) |\n| --- |\n| body |");
+  assert.deepEqual(header.filter(block => block.kind === "image").map(block => block.alt), ["a|b"]);
+  // \\\\ is an escaped backslash; the pipe after it still splits the row in two.
+  const doubled = markdownBlocks("| a\\\\|b ![m](n.png) |\n| --- |\n| c |");
+  assert.deepEqual(doubled.filter(block => block.kind === "image").map(block => block.target), ["n.png"]);
+  assert.deepEqual(markdownBlocks("| `![fake](bad.png)` |\n| --- |\n| x |").filter(block => block.kind === "image"), []);
+});
+
+test("Reference definitions resolve per fragment without copying the table", () => {
+  const source = "para [a][one]\n\n![i1](1.png)\n\npara [b][two]\n\n![i2](2.png)\n\n[one]: https://one.example\n[two]: https://two.example\n";
+  const blocks = markdownBlocks(source);
+  const first = blocks[0], second = blocks[2];
+  assert.equal(first.kind, "text");
+  assert.equal(second.kind, "text");
+  if (first.kind === "text") {
+    const fragment = marked.lexer(first.text);
+    assert.equal(fragment.links["one"]?.href, "https://one.example");
+    assert.ok(!fragment.links["two"]);
+  }
+  if (second.kind === "text") {
+    const fragment = marked.lexer(second.text);
+    assert.equal(fragment.links["two"]?.href, "https://two.example");
+    assert.ok(!fragment.links["one"]);
+  }
+  // 300 image-separated paragraphs over 300 definitions must not copy the
+  // definition table into every fragment.
+  const defs = Array.from({ length: 300 }, (_, i) => `[d${i}]: https://example.invalid/${i}`).join("\n");
+  const paragraphs = Array.from({ length: 300 }, (_, i) => `para ${i}\n\n![i](${i}.png)\n`).join("\n");
+  const amplifiedSource = `${paragraphs}\n${defs}\n`;
+  const amplified = markdownBlocks(amplifiedSource)
+    .reduce((sum, block) => sum + (block.kind === "text" ? block.text.length : 0), 0);
+  assert.ok(amplified - amplifiedSource.length < 64 * 1024, `expansion ${amplified - amplifiedSource.length}`);
+  // Documents whose reference expansion would exceed the aggregate budget are
+  // rejected outright instead of silently dropping reference links.
+  const destination = `https://example.invalid/${"a".repeat(100_000)}`;
+  const repeatedSource = `${Array.from({ length: 40 }, (_, i) => `para ${i} [x][big]\n\n![i](${i}.png)\n`).join("\n")}\n[big]: ${destination}\n`;
+  assert.throws(() => markdownBlocks(repeatedSource), /expansion budget/);
+});
+
+test("Escaped, collapsed and shortcut references resolve across fragments", () => {
+  const source = [
+    "Escaped [x][a\\]b], bracket [y][b\\[c], backslash [z][c\\\\d].",
+    "",
+    "![split1](1.png)",
+    "",
+    "Collapsed [collapsed][] and shortcut [short].",
+    "",
+    "![split2](2.png)",
+    "",
+    "[a\\]b]: https://example.invalid/1",
+    "[b\\[c]: https://example.invalid/2",
+    "[c\\\\d]: https://example.invalid/3",
+    "[collapsed]: https://example.invalid/4",
+    "[short]: https://example.invalid/5",
+  ].join("\n") + "\n";
+  const blocks = markdownBlocks(source);
+  assert.deepEqual(blocks.filter(block => block.kind === "image").map(block => block.target), ["1.png", "2.png"]);
+  const texts = blocks.filter(block => block.kind === "text");
+  const linkHrefs = (text: string): string[] => {
+    const found: string[] = [];
+    const walk = (tokens: Token[]): void => {
+      for (const token of tokens) {
+        if (token.type === "link" || token.type === "image") found.push(token.href);
+        if (token.type !== "code" && token.type !== "codespan" && token.type !== "html"
+          && "tokens" in token && Array.isArray(token.tokens)) walk(token.tokens);
+        if (token.type === "list") walk(token.items);
+      }
+    };
+    walk(marked.lexer(text));
+    return found;
+  };
+  // The escaped-], escaped-[ and backslash labels resolve semantically; the
+  // serialized definitions must re-lex to the same keys marked produced.
+  assert.deepEqual(linkHrefs(texts[0].text).sort(), [
+    "https://example.invalid/1",
+    "https://example.invalid/2",
+    "https://example.invalid/3",
+  ]);
+  // Collapsed and shortcut references resolve in the later fragment.
+  assert.deepEqual(linkHrefs(texts[1].text).sort(), [
+    "https://example.invalid/4",
+    "https://example.invalid/5",
+  ]);
 });
 
 test("Text and media reject terminal controls, unsupported HTML, binary and oversized input", async t => {
@@ -69,6 +159,21 @@ test("Text and media reject terminal controls, unsupported HTML, binary and over
   await assert.rejects(loadImage("https://example.invalid/a.png", dir, false), /not fetched/);
   const abort = new AbortController(); abort.abort();
   await assert.rejects(loadDocument(text, abort.signal), /abort/i);
+});
+
+test("Markdown image targets accept URL query and fragment suffixes", async t => {
+  const dir = await fixture(t);
+  const png = await sharp({ create: { width: 10, height: 10, channels: 3, background: "red" } }).png().toBuffer();
+  await writeFile(join(dir, "picture.png"), png);
+  await writeFile(join(dir, "literal#name.png"), png);
+  assert.equal((await loadImage("picture.png?v=1", dir, false)).width, 10);
+  assert.equal((await loadImage("picture.png#fragment", dir, false)).width, 10);
+  assert.equal((await loadImage("literal%23name.png", dir, false)).width, 10);
+  if (process.platform !== "win32") {
+    await writeFile(join(dir, "literal?name.png"), png);
+    assert.equal((await loadImage("literal%3Fname.png#fragment", dir, false)).width, 10);
+  }
+  await assert.rejects(loadImage("missing.png#frag", dir, false), /ENOENT/);
 });
 
 test("All supported image formats produce a static PNG; SVG resource loading is rejected", async t => {
@@ -95,6 +200,36 @@ test("All supported image formats produce a static PNG; SVG resource loading is 
   await assert.rejects(loadImage(svg, dir, false), /external resources/);
 });
 
+test("SVG containers and namespace tricks cannot bypass the preflight", async t => {
+  const dir = await fixture(t);
+  const svg = join(dir, "image.svg");
+  const benign = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>';
+  await writeFile(svg, gzipSync(Buffer.from(benign)));
+  await assert.rejects(loadImage(svg, dir, false), /SVGZ/);
+  const scripted = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><script>1</script><rect width="8" height="8"/></svg>';
+  await writeFile(svg, gzipSync(Buffer.from(scripted)));
+  await assert.rejects(loadImage(svg, dir, false), /SVGZ/);
+  await writeFile(svg, '<svg:svg xmlns:svg="http://www.w3.org/2000/svg" width="8" height="8"><svg:script>1</svg:script><svg:rect width="8" height="8"/></svg:svg>');
+  await assert.rejects(loadImage(svg, dir, false), /scripts, entities/);
+  await writeFile(svg, '<svg xmlns="http://www.w3.org/2000/svg" xmlns:π="http://www.w3.org/2000/svg" width="8" height="8"><π:script>1</π:script><rect width="8" height="8"/></svg>');
+  await assert.rejects(loadImage(svg, dir, false), /scripts, entities/);
+  await writeFile(svg, '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><svg:foreignObject>1</svg:foreignObject></svg>');
+  await assert.rejects(loadImage(svg, dir, false), /scripts, entities/);
+  await writeFile(svg, benign);
+  assert.equal((await loadImage(svg, dir, false)).width, 8);
+});
+
+test("SVG preflight does not interpret raster EXIF metadata as a document", async t => {
+  const dir = await fixture(t);
+  const file = join(dir, "metadata.jpg");
+  await sharp({ create: { width: 4, height: 3, channels: 3, background: "red" } })
+    .withExif({ IFD0: { ImageDescription: '<svg><script>inert metadata</script></svg>' } })
+    .jpeg().toFile(file);
+  const image = await loadImage(file, dir, false);
+  assert.equal(image.width, 4);
+  assert.equal(image.height, 3);
+});
+
 test("Raster viewport crops at row boundaries and pans actual pixels without oversized output", async t => {
   const dir = await fixture(t);
   const file = join(dir, "split.png");
@@ -115,7 +250,9 @@ test("Raster viewport crops at row boundaries and pans actual pixels without ove
 
 test("PDF renders a real page and extracts searchable text", async t => {
   const diagnostic = await mediaDiagnostics();
-  if (diagnostic.some(line => !line.endsWith(": available"))) { t.skip("Poppler is not installed"); return; }
+  if (diagnostic.filter(line => /^(pdfinfo|pdftoppm|pdftotext): available$/.test(line)).length < 3) { t.skip("Poppler is not installed"); return; }
+  // A missing image worker must fail here, not masquerade as missing Poppler.
+  assert.equal(diagnostic.find(line => line.startsWith("Node image worker")), "Node image worker: available");
   const dir = await fixture(t);
   const file = join(dir, "sample.pdf");
   await writeFile(file, samplePdf());

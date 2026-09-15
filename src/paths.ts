@@ -20,7 +20,7 @@ export interface FileEntry {
 /** Upper bound on completions returned by completePath. */
 export const MAX_COMPLETIONS = 500;
 /** Upper bound on entries returned by listDirectory. */
-// ponytail: cap keeps giant dirs from flooding the picker; raise or paginate in the picker if ever hit
+// Cap keeps giant dirs from flooding the picker; raise or paginate in the picker if ever hit.
 export const MAX_LIST_ENTRIES = 10_000;
 
 type ParsedArg = { logical: string; flag: boolean; url: boolean };
@@ -47,6 +47,12 @@ function parseArg(raw: string): ParsedArg {
 	return { logical, flag: s.startsWith("-"), url: /^[\w+.-]+:\/\//.test(logical) };
 }
 
+function expandHome(value: string): string {
+	if (value === "~") return homedir();
+	return value.startsWith("~/") || (path.sep === "\\" && value.startsWith("~\\"))
+		? path.join(homedir(), value.slice(2)) : value;
+}
+
 
 /** Expand ~ and quotes and resolve against cwd. Throws on empty args, flags, and URLs. */
 export function resolvePath(args: string, cwd: string): string {
@@ -54,7 +60,7 @@ export function resolvePath(args: string, cwd: string): string {
 	if (logical === "") throw new Error("no path given");
 	if (flag) throw new Error(`flags are not supported: ${args.trim()}`);
 	if (url) throw new Error(`URLs are not supported: ${args.trim()}`);
-	return path.resolve(cwd, logical === "~" ? homedir() : logical.startsWith("~/") ? path.join(homedir(), logical.slice(2)) : logical);
+	return path.resolve(cwd, expandHome(logical));
 }
 
 function byDirThenName(
@@ -75,22 +81,22 @@ export function completePath(args: string, cwd: string): AutocompleteItem[] | nu
 	const { logical, flag, url } = parseArg(args);
 	if (flag || url) return null;
 
-	const tilde = logical === "~" || logical.startsWith("~/");
-	const sep = logical.lastIndexOf("/");
+	const tilde = logical === "~" || logical.startsWith("~/") || (path.sep === "\\" && logical.startsWith("~\\"));
+	const sep = Math.max(logical.lastIndexOf("/"), path.sep === "\\" ? logical.lastIndexOf("\\") : -1);
 	let dirLogical: string;
 	let base: string;
 	if (tilde && sep <= 1) {
 		dirLogical = "~";
 		base = sep === -1 ? "" : logical.slice(2);
 	} else if (sep === -1) {
-		dirLogical = "";
-		base = logical;
+		dirLogical = path.sep === "\\" && /^[A-Za-z]:/.test(logical) ? logical.slice(0, 2) : "";
+		base = logical.slice(dirLogical.length);
 	} else {
-		dirLogical = logical.slice(0, sep) || "/";
+		dirLogical = logical.slice(0, sep + 1);
 		base = logical.slice(sep + 1);
 	}
 
-	const dirAbs = dirLogical === "" ? cwd : path.resolve(cwd, dirLogical === "~" ? homedir() : dirLogical.startsWith("~/") ? path.join(homedir(), dirLogical.slice(2)) : dirLogical);
+	const dirAbs = path.resolve(cwd, expandHome(dirLogical));
 	let dirents: Dirent[] = [];
 	try {
 		const directory = opendirSync(dirAbs);
@@ -106,7 +112,7 @@ export function completePath(args: string, cwd: string): AutocompleteItem[] | nu
 	}
 
 	const showHidden = base.startsWith(".");
-	const head = sep === -1 ? (tilde ? "~/" : "") : logical.slice(0, sep + 1);
+	const head = sep === -1 ? (tilde ? "~/" : dirLogical) : logical.slice(0, sep + 1);
 	const rows: { name: string; directory: boolean; value: string; label: string }[] = [];
 	for (const d of dirents) {
 		if (/[\x00-\x1f\x7f-\x9f]/.test(d.name)) continue;
@@ -135,8 +141,9 @@ export function completePath(args: string, cwd: string): AutocompleteItem[] | nu
 
 // Values replace the entire argument in the editor, so they carry their own
 // quoting: quote whenever the path contains whitespace or a double quote.
-function serializeValue(full: string, directory: boolean): string {
-	const withSep = directory ? `${full}/` : full;
+export function serializeValue(full: string, directory = false): string {
+	const withSep = directory && !full.endsWith("/") && !(path.sep === "\\" && full.endsWith("\\"))
+		? `${full}/` : full;
 	if (!/[\s"']/.test(withSep) && !withSep.startsWith("-")) return withSep;
 	return `"${withSep.replace(/[\\"]/g, "\\$&")}${directory ? "" : '"'}`;
 }
