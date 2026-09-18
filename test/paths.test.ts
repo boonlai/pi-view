@@ -19,7 +19,7 @@ writeFileSync(path.join(tmp, ".env"), "h");
 mkdirSync(path.join(tmp, ".hidden-dir"));
 writeFileSync(path.join(tmp, "README.md"), "r");
 writeFileSync(path.join(tmp, "plain.txt"), "p");
-symlinkSync(path.join(tmp, "nested"), path.join(tmp, "link"));
+symlinkSync(path.join(tmp, "nested"), path.join(tmp, "link"), process.platform === "win32" ? "junction" : "dir");
 symlinkSync(path.join(tmp, "no-such-target"), path.join(tmp, "broken"));
 mkdirSync(path.join(tmp, "locked-dir"));
 writeFileSync(path.join(tmp, "locked-dir/inner.txt"), "l");
@@ -148,7 +148,8 @@ test("nonexistent and unreadable targets return no completions", () => {
 	assert.equal(completePath("plain.txt/", tmp), null); // not a directory
 	assert.equal(completePath("--flag", tmp), null);
 	assert.equal(completePath("https://example.com/a", tmp), null);
-	if (!isRoot) assert.equal(completePath("locked-dir/", tmp), null); // EACCES
+	// POSIX-only: Windows ignores directory read permission bits, so EACCES never happens there.
+	if (!isRoot && process.platform !== "win32") assert.equal(completePath("locked-dir/", tmp), null); // EACCES
 });
 
 test("listDirectory returns directories first, sorted, with resolved symlinks", async () => {

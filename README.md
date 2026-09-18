@@ -66,6 +66,7 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 | Scroll text | Arrows, `j` / `k`, `PgUp` / `PgDn`, wheel |
 | Search text or filter a directory; next / previous match | `/`, then `n` / `N` for search matches |
 | Markdown source / PDF text view | `s` |
+| Toggle source line numbers (remembered) | `l`, or click `[l Lines]` in the footer |
 | Focus a Markdown image / return | `Enter` or `i` / `b` |
 | Zoom; fit / actual raster size | `+` / `-`; `0` / `1` |
 | Pan a zoomed image or PDF | Arrows |
@@ -76,12 +77,14 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 
 The wheel scrolls text or turns PDF pages—it never zooms. PDF wheel paging has a **200 ms cooldown**; reversing direction is immediate. In PDF text view, the wheel and `PgUp` / `PgDn` scroll text instead.
 
+The `[l Lines]` control in the footer toggles source line numbers for text/code files and Markdown's `s` source view; the rendered Markdown view points there with a muted `Lines: s source` hint. The choice is remembered across files and sessions in `pi-view/settings.json` inside your config directory (`XDG_CONFIG_HOME`, then `APPDATA`, then `~/.config`)—Pi and OMP settings are never touched, and I/O failures are silently ignored. Rendered Markdown rows and extracted PDF text never get synthetic numbers.
+
 ## What opens
 
 | Format | Support |
 | --- | --- |
-| Markdown | Rendered text, local images, source toggle |
-| UTF-8 text and code | Syntax highlighting where available, search, wrapping, line numbers |
+| Markdown | Rendered text, local images, source toggle with remembered line numbers |
+| UTF-8 text and code | Syntax highlighting where available, search, wrapping, remembered line numbers |
 | PNG, JPEG, GIF, WebP | Zoom and pan; GIFs are static |
 | SVG | Rasterized; external resources are rejected |
 | PDF | Page images and searchable extracted text; no OCR |

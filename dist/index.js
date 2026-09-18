@@ -1815,7 +1815,7 @@ async function mediaDiagnostics() {
 // src/viewer.ts
 import { unwatchFile, watchFile } from "node:fs";
 import { stat as stat2 } from "node:fs/promises";
-import { dirname as dirname2 } from "node:path";
+import { dirname as dirname3 } from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
 import { getLanguageFromPath, getMarkdownTheme, highlightCode } from "@earendil-works/pi-coding-agent";
 import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -2071,21 +2071,24 @@ function parseMouseStream(buffer, state) {
     }
     const sgr = SGR_MOUSE.exec(slice);
     if (sgr) {
-      const delta = wheelDelta(Number(sgr[1]));
-      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
+      const button = Number(sgr[1]);
+      const delta = wheelDelta(button);
+      events.push(delta !== null ? { kind: "wheel", delta } : sgr[4] === "M" && button === 0 ? { kind: "click", x: Number(sgr[2]) - 1, y: Number(sgr[3]) - 1 } : { kind: "noise" });
       pos += sgr[0].length;
       continue;
     }
     if (slice.startsWith(X10_MOUSE_PREFIX) && slice.length >= 6) {
-      const delta = wheelDelta(slice.charCodeAt(3) - 32);
-      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
+      const button = slice.charCodeAt(3) - 32;
+      const delta = wheelDelta(button);
+      events.push(delta !== null ? { kind: "wheel", delta } : button === 0 ? { kind: "click", x: slice.charCodeAt(4) - 33, y: slice.charCodeAt(5) - 33 } : { kind: "noise" });
       pos += 6;
       continue;
     }
     const urxvt = URXVT_MOUSE.exec(slice);
     if (urxvt) {
-      const delta = wheelDelta(Number(urxvt[1]) - 32);
-      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
+      const button = Number(urxvt[1]) - 32;
+      const delta = wheelDelta(button);
+      events.push(delta !== null ? { kind: "wheel", delta } : button === 0 ? { kind: "click", x: Number(urxvt[2]) - 1, y: Number(urxvt[3]) - 1 } : { kind: "noise" });
       pos += urxvt[0].length;
       continue;
     }
@@ -2100,7 +2103,7 @@ function parseMouseStream(buffer, state) {
   }
   return { events, rest, held: "" };
 }
-function attachMouse(tui, onWheel) {
+function attachMouse(tui, onWheel, onClick) {
   if (typeof tui.addInputListener !== "function") return () => {
   };
   const hostOwnsMouse = ompTerminal() !== void 0;
@@ -2128,6 +2131,8 @@ function attachMouse(tui, onWheel) {
         }
       } else if (event.kind === "wheel") {
         onWheel(event.delta);
+      } else if (event.kind === "click" && onClick) {
+        onClick(event.x, event.y);
       }
     }
     if (!state.held && rest === data) return;
@@ -2156,6 +2161,56 @@ function attachMouse(tui, onWheel) {
     } catch {
     }
   };
+}
+
+// src/settings.ts
+import { randomInt as randomInt2 } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { basename, dirname as dirname2, join as join3 } from "node:path";
+var SAVE_DELAY_MS = 250;
+var stateFile;
+var pendingValue;
+var saveTimer;
+function getStateFile() {
+  const root = process.env.XDG_CONFIG_HOME?.trim() || process.env.APPDATA?.trim() || join3(homedir2(), ".config");
+  return stateFile ?? join3(root, "pi-view", "settings.json");
+}
+function readLineNumbers(file = getStateFile()) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    return parsed.lineNumbers === true;
+  } catch {
+    return false;
+  }
+}
+function writeLineNumbers(file, value) {
+  const directory = dirname2(file);
+  mkdirSync(directory, { recursive: true });
+  const temp = join3(directory, `.${basename(file)}.${process.pid}.${randomInt2(1e9)}.tmp`);
+  try {
+    writeFileSync(temp, `${JSON.stringify({ lineNumbers: value })}
+`);
+    renameSync(temp, file);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+function queueLineNumbersSave(value) {
+  pendingValue = value;
+  saveTimer ??= setTimeout(flushLineNumbersSave, SAVE_DELAY_MS);
+  saveTimer.unref();
+}
+function flushLineNumbersSave() {
+  const value = pendingValue;
+  pendingValue = void 0;
+  clearTimeout(saveTimer);
+  saveTimer = void 0;
+  if (value === void 0) return;
+  try {
+    writeLineNumbers(getStateFile(), value);
+  } catch {
+  }
 }
 
 // src/viewer.ts
@@ -2216,7 +2271,7 @@ Home / End                 Start / end of text
 /                          Search text (or filter the file picker)
 n / N                      Next / previous search match
 w                          Toggle line wrapping
-l                          Toggle source line numbers
+l                          Toggle source line numbers (remembered)
 s                          Markdown source / PDF extracted text
 Enter or i                 Focus the first visible Markdown image
 b                          Return from an image/help/diagnostics
@@ -2246,7 +2301,7 @@ var PreviewViewer = class {
     this.done = done;
     this.onOpen = onOpen;
     this.path = path3;
-    this.detachMouse = attachMouse(tui, (delta) => this.wheel(delta));
+    this.detachMouse = attachMouse(tui, (delta) => this.wheel(delta), (column, row) => this.click(column, row));
     this.input.onSubmit = (value) => this.submitInput(value);
     if (initial === "help") this.panel = HELP;
     else if (initial === "diagnostics") void this.showDiagnostics();
@@ -2273,7 +2328,8 @@ var PreviewViewer = class {
   bodyHeight = 20;
   totalRows = 0;
   wrap = true;
-  numbers = false;
+  numbers = readLineNumbers();
+  linesChip;
   source = false;
   page = 1;
   pageWheelAt = 0;
@@ -2309,7 +2365,7 @@ var PreviewViewer = class {
     if (!value) {
       this.detachMouse?.();
       this.detachMouse = void 0;
-    } else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, (delta) => this.wheel(delta));
+    } else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, (delta) => this.wheel(delta), (column, row) => this.click(column, row));
   }
   redraw(clearLayout = false) {
     if (clearLayout) {
@@ -2328,6 +2384,7 @@ var PreviewViewer = class {
     this.abort.abort();
     this.stopWatching();
     clearTimeout(this.reloadTimer);
+    flushLineNumbersSave();
     this.detachMouse?.();
     this.detachMouse = void 0;
     this.clearFrames();
@@ -2462,6 +2519,22 @@ var PreviewViewer = class {
     this.resetZoom();
     this.redraw();
   }
+  // Numbering applies to text/code and Markdown source rows only — never to
+  // rendered Markdown, extracted PDF text, panels, the picker or images.
+  get numbersEligible() {
+    return !this.panel && !this.picker && (this.document?.kind === "text" || this.document?.kind === "markdown" && this.source);
+  }
+  toggleNumbers() {
+    if (!this.numbersEligible) return;
+    this.numbers = !this.numbers;
+    queueLineNumbersSave(this.numbers);
+    this.redraw(true);
+  }
+  click(column, row) {
+    if (this.closed || this.inputMode || this.remotePrompt) return;
+    const chip = this.linesChip;
+    if (chip && row === chip.row && column >= 0 && column < chip.end) this.toggleNumbers();
+  }
   handleInput(data) {
     if (this.closed || isKeyRelease(data)) return;
     const raw = data;
@@ -2516,7 +2589,7 @@ var PreviewViewer = class {
       return;
     }
     if (data === "o") {
-      void this.open(this.picker?.directory ?? dirname2(this.path));
+      void this.open(this.picker?.directory ?? dirname3(this.path));
       return;
     }
     if (data === "R" && this.document?.kind === "markdown") {
@@ -2531,7 +2604,7 @@ var PreviewViewer = class {
     if (this.picker && !this.panel) {
       const entries = this.filteredEntries();
       if (matchesKey(data, "enter") && entries[this.picker.selected]) void this.open(entries[this.picker.selected].path);
-      else if (matchesKey(data, "backspace") || matchesKey(data, "left")) void this.open(dirname2(this.picker.directory));
+      else if (matchesKey(data, "backspace") || matchesKey(data, "left")) void this.open(dirname3(this.picker.directory));
       else if (matchesKey(data, "up") || data === "k") this.picker.selected = Math.max(0, this.picker.selected - 1);
       else if (matchesKey(data, "down") || data === "j") this.picker.selected = Math.min(entries.length - 1, this.picker.selected + 1);
       else if (matchesKey(data, "pageUp")) this.picker.selected = Math.max(0, this.picker.selected - this.bodyHeight);
@@ -2585,8 +2658,7 @@ var PreviewViewer = class {
       return;
     }
     if (data === "l") {
-      this.numbers = !this.numbers;
-      this.redraw(true);
+      this.toggleNumbers();
       return;
     }
     if (data === "n" || data === "N") {
@@ -2659,11 +2731,12 @@ var PreviewViewer = class {
     const language = this.document && getLanguageFromPath(this.document.path);
     const lines = code && text.length <= 1e5 ? highlightCode(text, language) : text.split("\n");
     const digits = String(lines.length).length;
+    const numbered = this.numbersEligible && this.numbers;
     const rows = [];
     const units = [];
     for (const [index, line] of lines.entries()) {
-      const prefix = this.numbers ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} \u2502 `) : "";
-      const indent = this.numbers ? digits + 3 : 0;
+      const prefix = numbered ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} \u2502 `) : "";
+      const indent = numbered ? digits + 3 : 0;
       const contentWidth = Math.max(1, width - indent);
       const expanded = line.replace(/\t/g, "    ");
       const plain = stripVTControlCharacters2(expanded);
@@ -2814,7 +2887,7 @@ var PreviewViewer = class {
     const allowRemote = this.remoteAllowed;
     const promise = this.imageJobs.then(() => {
       signal.throwIfAborted();
-      return page !== void 0 && target === `pdf:${page}` ? loadPdfPage(path3, page, signal) : loadImage(target, dirname2(path3), allowRemote, signal);
+      return page !== void 0 && target === `pdf:${page}` ? loadPdfPage(path3, page, signal) : loadImage(target, dirname3(path3), allowRemote, signal);
     });
     source.promise = promise.then((image) => {
       source.image = image;
@@ -2891,6 +2964,7 @@ var PreviewViewer = class {
   }
   render(width) {
     width = Math.max(1, width);
+    this.linesChip = void 0;
     if (this.tui.terminal.rows < 6) return [truncateToWidth("pi-view \xB7 enlarge terminal \xB7 Esc: close", width)];
     this.requestedImages.clear();
     this.width = Math.max(1, width);
@@ -2964,19 +3038,29 @@ var PreviewViewer = class {
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
     let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
+    let statusLine = status.replace(/[\n\t]/g, " ");
+    if (!this.inputMode && !this.remotePrompt && !this.message) {
+      if (this.numbersEligible) {
+        const chip = `[l Lines: ${this.numbers ? "on" : "off"}]`;
+        this.linesChip = { row: this.bodyHeight + 3, end: visibleWidth(chip) };
+        statusLine = `${this.theme.fg("accent", chip)} \xB7 ${statusLine}`;
+      } else if (!this.imageMode() && this.document?.kind === "markdown" && !this.source) {
+        statusLine = `${this.theme.fg("muted", "Lines: s source")} \xB7 ${statusLine}`;
+      }
+    }
     return [
       this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)),
       this.theme.fg("borderMuted", "\u2500".repeat(width)),
       ...body.slice(0, this.bodyHeight),
       this.theme.fg("borderMuted", "\u2500".repeat(width)),
-      truncateToWidth(status.replace(/[\n\t]/g, " "), width)
+      truncateToWidth(statusLine, width)
     ];
   }
 };
 
 // src/quick-open.ts
 import { stat as stat3 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
+import { homedir as homedir3 } from "node:os";
 import { relative, sep as sep2 } from "node:path";
 import { Input as Input2, matchesKey as matchesKey2, truncateToWidth as truncateToWidth2 } from "@earendil-works/pi-tui";
 var QuickOpen = class {
@@ -3041,7 +3125,7 @@ var QuickOpen = class {
   displayPath(path3) {
     const local = relative(this.cwd, path3);
     if (local && local !== ".." && !local.startsWith(`..${sep2}`) && !local.startsWith(sep2)) return local;
-    const home = homedir2();
+    const home = homedir3();
     if (path3.startsWith(`${home}${sep2}`)) return `~/${path3.slice(home.length + 1)}`;
     return path3;
   }
@@ -3164,7 +3248,7 @@ var QuickOpen = class {
 
 // src/recents.ts
 import { lstat, realpath, stat as stat4 } from "node:fs/promises";
-import { homedir as homedir3 } from "node:os";
+import { homedir as homedir4 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 import * as path2 from "node:path";
 var MAX_RECENT_FILES = 20;
@@ -3280,7 +3364,7 @@ function toAbsolutePath(raw, cwd) {
     if (name.length === 1) return path2.resolve(cwd, s);
     return null;
   }
-  const expanded = s === "~" ? homedir3() : s.startsWith("~/") ? path2.join(homedir3(), s.slice(2)) : s;
+  const expanded = s === "~" ? homedir4() : s.startsWith("~/") ? path2.join(homedir4(), s.slice(2)) : s;
   return path2.resolve(cwd, expanded);
 }
 async function recentFiles(entries, cwd) {

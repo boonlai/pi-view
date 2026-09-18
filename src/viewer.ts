@@ -8,6 +8,7 @@ import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, tru
 import { listDirectory, MAX_LIST_ENTRIES, type FileEntry } from "./paths.ts";
 import { loadDocument, loadImage, loadPdfPage, mediaDiagnostics, pdfText, renderRaster, safeText, type ImageSource, type PreviewDocument } from "./documents.ts";
 import { attachMouse, capabilities, createTerminalImage, type TerminalImage } from "./host.ts";
+import { flushLineNumbersSave, queueLineNumbersSave, readLineNumbers } from "./settings.ts";
 
 type TextUnit = { content: string; spans: { row: number; start: number; end: number }[] };
 type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
@@ -61,7 +62,7 @@ Home / End                 Start / end of text
 /                          Search text (or filter the file picker)
 n / N                      Next / previous search match
 w                          Toggle line wrapping
-l                          Toggle source line numbers
+l                          Toggle source line numbers (remembered)
 s                          Markdown source / PDF extracted text
 Enter or i                 Focus the first visible Markdown image
 b                          Return from an image/help/diagnostics
@@ -103,7 +104,8 @@ export class PreviewViewer implements Component {
   private bodyHeight = 20;
   private totalRows = 0;
   private wrap = true;
-  private numbers = false;
+  private numbers = readLineNumbers();
+  private linesChip?: { row: number; end: number };
   private source = false;
   private page = 1;
   private pageWheelAt = 0;
@@ -133,7 +135,7 @@ export class PreviewViewer implements Component {
 
   constructor(private tui: TUI, private theme: Theme, private done: () => void, path: string, initial?: "help" | "diagnostics", private onOpen?: (path: string) => void) {
     this.path = path;
-    this.detachMouse = attachMouse(tui, delta => this.wheel(delta));
+    this.detachMouse = attachMouse(tui, delta => this.wheel(delta), (column, row) => this.click(column, row));
     this.input.onSubmit = value => this.submitInput(value);
     if (initial === "help") this.panel = HELP;
     else if (initial === "diagnostics") void this.showDiagnostics();
@@ -144,7 +146,7 @@ export class PreviewViewer implements Component {
   set focused(value: boolean) {
     this._focused = value; this.input.focused = value && !!this.inputMode;
     if (!value) { this.detachMouse?.(); this.detachMouse = undefined; }
-    else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, delta => this.wheel(delta));
+    else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, delta => this.wheel(delta), (column, row) => this.click(column, row));
   }
 
   private redraw(clearLayout = false): void {
@@ -163,6 +165,7 @@ export class PreviewViewer implements Component {
     this.abort.abort();
     this.stopWatching();
     clearTimeout(this.reloadTimer);
+    flushLineNumbersSave();
     this.detachMouse?.(); this.detachMouse = undefined;
     this.clearFrames();
     this.images.clear();
@@ -283,6 +286,26 @@ export class PreviewViewer implements Component {
     this.redraw();
   }
 
+  // Numbering applies to text/code and Markdown source rows only — never to
+  // rendered Markdown, extracted PDF text, panels, the picker or images.
+  private get numbersEligible(): boolean {
+    return !this.panel && !this.picker
+      && (this.document?.kind === "text" || (this.document?.kind === "markdown" && this.source));
+  }
+
+  private toggleNumbers(): void {
+    if (!this.numbersEligible) return;
+    this.numbers = !this.numbers;
+    queueLineNumbersSave(this.numbers);
+    this.redraw(true);
+  }
+
+  click(column: number, row: number): void {
+    if (this.closed || this.inputMode || this.remotePrompt) return;
+    const chip = this.linesChip;
+    if (chip && row === chip.row && column >= 0 && column < chip.end) this.toggleNumbers();
+  }
+
   handleInput(data: string): void {
     if (this.closed || isKeyRelease(data)) return;
     const raw = data;
@@ -349,7 +372,7 @@ export class PreviewViewer implements Component {
       this.focusImage = this.visibleImages[0]; this.resetZoom(); this.redraw(); return;
     }
     if (data === "w") { this.wrap = !this.wrap; this.horizontal = 0; this.redraw(true); return; }
-    if (data === "l") { this.numbers = !this.numbers; this.redraw(true); return; }
+    if (data === "l") { this.toggleNumbers(); return; }
     if (data === "n" || data === "N") { this.findMatch(data === "N" ? -1 : 1); return; }
     if (matchesKey(data, "up") || data === "k") this.offset--;
     else if (matchesKey(data, "down") || data === "j") this.offset++;
@@ -405,11 +428,12 @@ export class PreviewViewer implements Component {
     const language = this.document && getLanguageFromPath(this.document.path);
     const lines = code && text.length <= 100_000 ? highlightCode(text, language) : text.split("\n");
     const digits = String(lines.length).length;
+    const numbered = this.numbersEligible && this.numbers;
     const rows: string[] = [];
     const units: TextUnit[] = [];
     for (const [index, line] of lines.entries()) {
-      const prefix = this.numbers ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} │ `) : "";
-      const indent = this.numbers ? digits + 3 : 0;
+      const prefix = numbered ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} │ `) : "";
+      const indent = numbered ? digits + 3 : 0;
       const contentWidth = Math.max(1, width - indent);
       const expanded = line.replace(/\t/g, "    ");
       const plain = stripVTControlCharacters(expanded);
@@ -634,6 +658,7 @@ export class PreviewViewer implements Component {
 
   render(width: number): string[] {
     width = Math.max(1, width);
+    this.linesChip = undefined;
     if (this.tui.terminal.rows < 6) return [truncateToWidth("pi-view · enlarge terminal · Esc: close", width)];
     this.requestedImages.clear();
     this.width = Math.max(1, width);
@@ -702,7 +727,17 @@ export class PreviewViewer implements Component {
       : this.picker && !this.panel ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
       : "↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
+    let statusLine = status.replace(/[\n\t]/g, " ");
+    if (!this.inputMode && !this.remotePrompt && !this.message) {
+      if (this.numbersEligible) {
+        const chip = `[l Lines: ${this.numbers ? "on" : "off"}]`;
+        this.linesChip = { row: this.bodyHeight + 3, end: visibleWidth(chip) };
+        statusLine = `${this.theme.fg("accent", chip)} · ${statusLine}`;
+      } else if (!this.imageMode() && this.document?.kind === "markdown" && !this.source) {
+        statusLine = `${this.theme.fg("muted", "Lines: s source")} · ${statusLine}`;
+      }
+    }
     return [this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)), this.theme.fg("borderMuted", "─".repeat(width)),
-      ...body.slice(0, this.bodyHeight), this.theme.fg("borderMuted", "─".repeat(width)), truncateToWidth(status.replace(/[\n\t]/g, " "), width)];
+      ...body.slice(0, this.bodyHeight), this.theme.fg("borderMuted", "─".repeat(width)), truncateToWidth(statusLine, width)];
   }
 }
