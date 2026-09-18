@@ -77,20 +77,7 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
         setProgress() {}
         onAppearanceChange() {}
         joined() { return this.writes.join(""); }
-        // The freshest output: once the editor overlay is gone its grid
-        // filler ("~" rows) disappears from the newest frames.
         recent() { return this.writes.slice(-40).join(""); }
-        // The last fully rendered frame: pi-tui ends each synchronized
-        // render with the ?2026l sequence, so a frame is the text between
-        // the final two markers. A partial trailing render is excluded.
-        lastFrame() {
-          const stream = this.writes.join("");
-          const marker = "\u001b[?2026l";
-          const end = stream.lastIndexOf(marker);
-          if (end < 0) return stream;
-          const start = stream.lastIndexOf(marker, end - 1);
-          return stream.slice(start < 0 ? 0 : start + marker.length, end);
-        }
         key(data) { this.onInput(data); }
       }
 
@@ -110,6 +97,7 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
         }
 
         let result;
+        let surface;
         try {
           await ensureTheme();
           const commands = new Map();
@@ -129,6 +117,7 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
                 let handle;
                 const done = () => { handle?.hide(); resolve(undefined); };
                 const component = factory(tui, theme, {}, done);
+                surface = component;
                 handle = tui.showOverlay(component, options?.overlayOptions);
                 options?.onHandle?.(handle);
                 return promise;
@@ -156,11 +145,11 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
           term.key(":");
           term.key("q");
           term.key("\r");
-          // :q ends the session and reloads the preview: the newest frames
-          // show the saved line again and no native "~" filler rows remain.
+          // Terminal writes are incremental and may omit an unchanged body.
+          // Read the component's complete public render, not a raw write chunk.
           await waitFor("editor exit restores the refreshed preview", () => {
-            const frame = term.lastFrame().split(CURSOR_MARKER).join("");
-            return frame.includes("OMP-EDITED-7391") && !frame.includes("~");
+            const frame = surface.render(term.columns).join("\n").split(CURSOR_MARKER).join("");
+            return !surface.editing && frame.includes("OMP-EDITED-7391");
           });
           term.key("\x1b");
           await open;
@@ -169,6 +158,7 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
         } catch (error) {
           result = { ok: false, error: error.stack ?? String(error) };
         } finally {
+          try { surface?.dispose(); } catch {}
           try { tui.stop(); } catch {}
         }
         writeFileSync(RESULT_PATH, JSON.stringify(result));

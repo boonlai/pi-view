@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -395,7 +395,7 @@ test("a ten-thousand e-acute key burst saves byte-exactly", async t => {
   editor.input(":w\r");
   await until(async () => (await readFile(path, "utf8")) === "seed" + "\u00e9".repeat(10_000) + "\n",
     "the whole burst reaches the file exactly once", 60_000);
-  assert.equal(editor.dirty, false, "the save covers the full burst");
+  await until(() => !editor.dirty, "the native save notification clears the modified state");
 });
 
 test("native More pager interaction stays ordered with paste bursts", async t => {
@@ -479,4 +479,29 @@ test("rapid resize reversals converge on the latest native grid width", async t 
     return rows.some(row => row.includes("seedRESIZED"))
       && rows.length === 12 && rows.every(row => row.length === 80);
   }, "subsequent native editing renders at the final requested dimensions", 10_000);
+});
+
+test("an unexpected native process death is not a successful quit", async t => {
+  if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
+  isolateNvimState(t);
+  const path = await makeFile("crash.txt", "seed\n");
+  let child: ChildProcess | undefined;
+  let reason: string | undefined;
+  const editor = new NvimEditor(path, {
+    cols: 72, rows: 12,
+    onReady: () => {},
+    onFlush: () => {},
+    onError: () => {},
+    onExit: value => { reason = value; },
+  }, (command, args, options) => {
+    child = spawn(command, args, options);
+    return child;
+  });
+  t.after(() => editor.dispose());
+  editor.start();
+  await until(() => editor.render(false).rows.some(row => row.includes("seed")),
+    "the native file is visible before the process failure", 10_000);
+  child!.kill("SIGKILL");
+  await until(() => reason === "crashed", "an external process kill reports a crash");
+  assert.equal(await readFile(path, "utf8"), "seed\n");
 });

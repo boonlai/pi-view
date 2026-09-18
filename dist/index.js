@@ -4653,7 +4653,7 @@ var NvimEditor = class {
       return;
     }
     this.finishLocally();
-    if (this.userExit) this.options.onExit("quit");
+    if (this.userExit || code === 0 && !signal) this.options.onExit("quit");
     else {
       const detail = signal ? `Neovim terminated by signal ${signal}` : `Neovim exited with code ${code ?? "unknown"}`;
       this.options.onExit("crashed", detail);
