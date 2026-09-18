@@ -4123,6 +4123,7 @@ var NOTATION_BY_KEY = {
   tab: "Tab",
   backspace: "BS",
   delete: "Del",
+  space: "Space",
   insert: "Insert",
   home: "Home",
   end: "End",
@@ -4154,12 +4155,16 @@ var LUA_SETUP = [
   "vim.o.undofile = false",
   "local runtime = vim.env.VIMRUNTIME",
   "if runtime and #runtime > 0 then",
+  "  local function pathKey(path)",
+  "    local key = path:gsub('\\\\', '/'):gsub('/+$', '')",
+  "    return vim.fn.has('win32') == 1 and key:lower() or key",
+  "  end",
   "  local roots = { runtime }",
   "  local paths = vim.api.nvim_list_runtime_paths()",
   "  for index, path in ipairs(paths) do",
-  "    if path == runtime then",
+  "    if pathKey(path) == pathKey(runtime) then",
   "      local library = paths[index + 1]",
-  "      if library and vim.fn.fnamemodify(library, ':t') == 'nvim' then roots[#roots + 1] = library end",
+  "      if library and pathKey(library):match('/nvim$') then roots[#roots + 1] = library end",
   "      break",
   "    end",
   "  end",
@@ -4250,12 +4255,15 @@ var NvimEditor = class {
       });
       child.stderr?.on("error", () => {
       });
-      this.readStream(child.stdout);
+      const reading = this.readStream(child.stdout);
       child.stderr?.on("data", (chunk) => this.rememberStderr(chunk));
       child.on("error", (error) => {
         this.fail(error.code === "ENOENT" ? "Neovim is not installed or not on PATH; install nvim (>= 0.9) to edit previews" : `Could not launch Neovim: ${safeText(error.message)}`);
       });
-      child.on("close", (code, signal) => this.onSessionEnd(code, signal));
+      child.on("close", async (code, signal) => {
+        await reading;
+        this.onSessionEnd(code, signal);
+      });
       this.readyTimer = setTimeout(() => this.fail("Neovim did not start drawing within 10 seconds"), 1e4);
       this.readyTimer.unref();
       void this.handshake().catch((error) => this.fail(error instanceof Error ? error.message : String(error)));
@@ -4369,7 +4377,7 @@ var NvimEditor = class {
   }
   /** Consume the msgpack-rpc stream through the maintained codec. */
   readStream(stdout) {
-    void (async () => {
+    return (async () => {
       try {
         const chunks = async function* (stream) {
           for await (const chunk of stream) yield chunk;

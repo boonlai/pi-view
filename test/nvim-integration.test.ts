@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,34 +26,66 @@ const nvimProbe = spawnSync("nvim", ["--version"], { encoding: "utf8", timeout: 
 const haveNvim = (nvimProbe.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT";
 if (haveNvim) assert.equal(nvimProbe.status, 0, nvimProbe.error?.message ?? nvimProbe.stderr);
 
+// Every temp directory this file creates is owned by the file-level after
+// hook below, never by per-test hooks. The native Neovim child runs with
+// its working directory inside a fixture dir, and Windows keeps that
+// directory handle open until the child is fully reaped — dispose() only
+// schedules the SIGTERM/SIGKILL timers, and per-test t.after hooks run
+// FIFO ahead of the dispose hook, so an rmdir there races the still-live
+// child and fails with EBUSY. Per-test hooks therefore only restore
+// environment state; deletion waits here, after every per-test dispose
+// has drained, with fs.rm's bounded EBUSY retry backoff absorbing the
+// asynchronous native teardown.
+const ownedDirs: string[] = [];
+
+after(async () => {
+  const failures: Array<{ dir: string; error: unknown }> = [];
+  for (const dir of ownedDirs.reverse()) {
+    try {
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch (error) {
+      failures.push({ dir, error });
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures.map(failure => failure.error),
+      `owned temp directories survived cleanup: ${failures.map(failure => failure.dir).join(", ")}`);
+  }
+});
+
 // Isolate every Neovim child from the real user state: HOME and the XDG
 // roots move into a temp dir for the duration of the test, so anything
-// Neovim writes — above all its swap files (0.12 default location:
-// $XDG_STATE_HOME/nvim/swap//) — lands somewhere the test owns and removes.
+// Neovim writes — above all its swap files — lands in state the test owns
+// and the file-level after hook removes. The app directory under those
+// roots is platform-specific (Windows resolves nvim state under
+// LOCALAPPDATA with an nvim-data suffix), so that root is isolated too
+// and recovery scans the whole tree instead of assuming a layout.
 // childEnv snapshots that isolation for explicitly spawned siblings such as
 // the recovery Neovim, which must share the swap location.
-function isolateNvimState(t: { after(callback: () => unknown): void }): { swapDir: string; childEnv: NodeJS.ProcessEnv } {
+function isolateNvimState(t: { after(callback: () => unknown): void }): { stateRoot: string; childEnv: NodeJS.ProcessEnv } {
   const root = mkdtempSync(join(tmpdir(), "pi-view-nvim-home-"));
+  ownedDirs.push(root);
   const restore: Record<string, string | undefined> = {
     HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
     XDG_DATA_HOME: process.env.XDG_DATA_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
     NVIM_APPNAME: process.env.NVIM_APPNAME,
   };
   Object.assign(process.env, {
     HOME: root, USERPROFILE: root,
     XDG_CONFIG_HOME: join(root, "xdg-config"), XDG_CACHE_HOME: join(root, "xdg-cache"),
     XDG_DATA_HOME: join(root, "xdg-data"), XDG_STATE_HOME: join(root, "xdg-state"),
+    LOCALAPPDATA: join(root, "appdata-local"),
     NVIM_APPNAME: "nvim",
   });
-  t.after(async () => {
+  t.after(() => {
     for (const [key, value] of Object.entries(restore)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    await rm(root, { recursive: true, force: true });
   });
-  return { swapDir: join(root, "xdg-state", "nvim", "swap"), childEnv: { ...process.env } };
+  return { stateRoot: root, childEnv: { ...process.env } };
 }
 
 function stubTui(): { tui: TUI; listeners: Set<TuiInputListener> } {
@@ -78,30 +110,33 @@ function screen(viewer: PreviewViewer): string {
   return stripVTControlCharacters(viewer.render(72).join("\n")).split(CURSOR_MARKER).join("");
 }
 
-async function until(predicate: () => boolean | Promise<boolean>, message: string, budget = 5_000): Promise<void> {
+async function until(predicate: () => boolean | Promise<boolean>, message: string | (() => string), budget = 5_000): Promise<void> {
   const deadline = Date.now() + budget;
   while (Date.now() < deadline && !(await predicate())) await delay(25);
-  assert.ok(await predicate(), message);
+  if (!(await predicate())) assert.fail(typeof message === "function" ? message() : message);
 }
 
-async function makeFile(t: { after(callback: () => unknown): void }, name: string, content: string): Promise<string> {
+// Fixture files live in their own temp dir; its deletion belongs to the
+// file-level after hook (the native child's cwd sits inside it on Windows).
+async function makeFile(name: string, content: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pi-view-nvim-integration-"));
+  ownedDirs.push(dir);
   const path = join(dir, name);
   await writeFile(path, content);
-  t.after(async () => { await rm(dir, { recursive: true, force: true }); });
   return path;
 }
 
-// Prove swap recovery the native way: wait for the swap file in the
-// isolated state dir (percent-encoded names, so scan, never guess), then a
-// fresh Neovim sharing that state recovers the buffer through :recover.
-async function recoverSwap(swapDir: string, childEnv: NodeJS.ProcessEnv, path: string): Promise<string> {
+// Prove swap recovery the native way: wait for a swap file anywhere inside
+// the owned state root (the app directory under it is platform-specific, so
+// scan recursively instead of guessing the layout), then a fresh Neovim
+// sharing that state recovers the buffer through :recover.
+async function recoverSwap(stateRoot: string, childEnv: NodeJS.ProcessEnv, path: string): Promise<string> {
   let swapPath: string | undefined;
   await until(async () => {
-    const entries = await readdir(swapDir).catch(() => [] as string[]);
-    swapPath = entries.map(name => join(swapDir, name)).find(name => /\.sw[a-p]$/.test(name));
+    const entries = await readdir(stateRoot, { recursive: true, withFileTypes: true }).catch(() => []);
+    swapPath = entries.find(entry => entry.isFile() && /\.sw[a-p]$/.test(entry.name))?.parentPath;
     return swapPath !== undefined;
-  }, "the swap file exists in the isolated state dir");
+  }, "the swap file exists in the isolated state root");
   assert.ok(swapPath, "swap file resolved");
   const recovered = `${path}.recovered`;
   const rec = spawnSync("nvim",
@@ -114,7 +149,7 @@ async function recoverSwap(swapDir: string, childEnv: NodeJS.ProcessEnv, path: s
 test(":w saves exact buffer bytes and :q returns to the refreshed preview", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "doc.txt", "line one\n");
+  const path = await makeFile("doc.txt", "line one\n");
   const { tui } = stubTui();
   let closes = 0;
   const viewer = new PreviewViewer(tui, theme, () => { closes++; }, path);
@@ -144,7 +179,7 @@ test(":w saves exact buffer bytes and :q returns to the refreshed preview", asyn
 test("dirty :q is refused by Neovim and :q! discards without touching disk", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "code.js", "original\n");
+  const path = await makeFile("code.js", "original\n");
   const exits: string[] = [];
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
@@ -172,7 +207,7 @@ test("dirty :q is refused by Neovim and :q! discards without touching disk", asy
 test("bracketed paste reaches the buffer verbatim: NUL kept, CRLF normalized", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "pasted.txt", "line one\n");
+  const path = await makeFile("pasted.txt", "line one\n");
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
@@ -197,7 +232,7 @@ test("bracketed paste reaches the buffer verbatim: NUL kept, CRLF normalized", a
 test("a refused paste is echoed visibly and does not end the session", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "locked.txt", "read only\n");
+  const path = await makeFile("locked.txt", "read only\n");
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
@@ -228,8 +263,8 @@ test("a refused paste is echoed visibly and does not end the session", async t =
 
 test("forced teardown keeps unsaved edits recoverable through native nvim -r", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
-  const { swapDir, childEnv } = isolateNvimState(t);
-  const path = await makeFile(t, "notes.txt", "base\n");
+  const { stateRoot, childEnv } = isolateNvimState(t);
+  const path = await makeFile("notes.txt", "base\n");
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
@@ -247,15 +282,15 @@ test("forced teardown keeps unsaved edits recoverable through native nvim -r", a
   // (SIGTERM after 150ms, SIGKILL 250ms later); let that window elapse
   // before the recovery probe.
   await delay(600);
-  const recoveredContent = await recoverSwap(swapDir, childEnv, path);
+  const recoveredContent = await recoverSwap(stateRoot, childEnv, path);
   assert.ok(recoveredContent.includes("SWAP_MARKER_9137"), "native :recover restores the unsaved edits");
   assert.equal(await readFile(path, "utf8"), "base\n", "recovery never touches the real file");
 });
 
 test("teardown while input is in flight delivers queued keys exactly once", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
-  const { swapDir, childEnv } = isolateNvimState(t);
-  const path = await makeFile(t, "stream.txt", "head\n");
+  const { stateRoot, childEnv } = isolateNvimState(t);
+  const path = await makeFile("stream.txt", "head\n");
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
@@ -275,7 +310,7 @@ test("teardown while input is in flight delivers queued keys exactly once", asyn
   await delay(600);
   // The preserve RPC runs after any flushed input, so the swap reflects
   // exactly what Neovim received: "-two" appended once, never duplicated.
-  const recoveredContent = await recoverSwap(swapDir, childEnv, path);
+  const recoveredContent = await recoverSwap(stateRoot, childEnv, path);
   assert.equal(recoveredContent, "head-one-two\n",
     "recovery shows each in-flight keystroke batch exactly once");
 });
@@ -283,8 +318,8 @@ test("teardown while input is in flight delivers queued keys exactly once", asyn
 test("markdown previews round-trip an edit through Neovim", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "doc.md", "# Title\n\nbody line\n");
-  const marker = await makeFile(t, "user-plugin.txt", "");
+  const path = await makeFile("doc.md", "# Title\n\nbody line\n");
+  const marker = await makeFile("user-plugin.txt", "");
   const packageDir = join(process.env.XDG_CONFIG_HOME!, "nvim", "pack", "probe", "start", "probe", "ftplugin");
   await mkdir(packageDir, { recursive: true });
   // --noplugin alone does not exclude package-provided filetype plugins.
@@ -299,7 +334,8 @@ test("markdown previews round-trip an edit through Neovim", async t => {
   viewer.handleInput("e");
   await until(() => screen(viewer).includes(":w save"), "the editor session owns the preview body", 10_000);
   type(viewer, "GA more\x1b");
-  await until(() => screen(viewer).includes("body line more"), "the inserted text renders in the markdown buffer", 10_000);
+  await until(() => screen(viewer).includes("body line more"),
+    () => `the inserted text renders in the markdown buffer\ncurrent preview screen:\n${screen(viewer)}`, 10_000);
   type(viewer, ":w\r");
   await until(async () => (await readFile(path, "utf8")) === "# Title\n\nbody line more\n",
     ":w persists the markdown buffer exactly", 10_000);
@@ -310,10 +346,10 @@ test("markdown previews round-trip an edit through Neovim", async t => {
   assert.equal(closes, 0, ":q returns to the preview instead of closing it");
 });
 
-test("literal plus, Kitty shifted colon, and Kitty e-acute save exactly", async t => {
+test("literal and Kitty keys preserve text and native modified-Space behavior", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "keys.txt", "seed\n");
+  const path = await makeFile("keys.txt", "seed\n");
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
@@ -334,12 +370,15 @@ test("literal plus, Kitty shifted colon, and Kitty e-acute save exactly", async 
     "the literal and Kitty edits have been saved", 10_000);
   assert.equal(await readFile(path, "utf8"), "seed+:\u00e9\n",
     "literal and Kitty printable keys reach the file byte-exactly");
+  editor.input("A\x1b[32;5u:w\r");
+  await until(async () => (await readFile(path, "utf8")) === "seed+:\u00e9+:\u00e9\n",
+    "Kitty Ctrl-Space repeats the previous insertion and leaves insert mode", 10_000);
 });
 
 test("a ten-thousand e-acute key burst saves byte-exactly", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "burst.txt", "seed\n");
+  const path = await makeFile("burst.txt", "seed\n");
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
@@ -362,14 +401,14 @@ test("a ten-thousand e-acute key burst saves byte-exactly", async t => {
 test("native More pager interaction stays ordered with paste bursts", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "paged.txt", "line one\n");
+  const path = await makeFile("paged.txt", "line one\n");
   const exits: string[] = [];
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
     onReady: () => {},
     onFlush: () => {},
     onError: () => {},
-    onExit: reason => { exits.push(reason); },
+    onExit: (reason, detail) => { exits.push(detail ? `${reason}: ${detail}` : reason); },
   });
   editor.start();
   t.after(() => editor.dispose());
@@ -386,7 +425,9 @@ test("native More pager interaction stays ordered with paste bursts", async t =>
   // tail, leave insert, write and quit.
   editor.input("ccREWRITTEN\x1b[200~TAIL\x1b[201~\x1b:wq\r");
   await until(() => !editor.running, ":wq ends the session", 30_000);
-  await until(() => exits.length === 1 && exits[0] === "quit", "the write-quit surfaces as a user quit");
+  await until(() => exits.length === 1 && exits[0] === "quit",
+    () => `the write-quit surfaces as a user quit\nonExit reasons: ${JSON.stringify(exits)}\nnative rows:\n${
+      editor.render(true).rows.map(row => stripVTControlCharacters(row).split(CURSOR_MARKER).join("")).join("\n")}`);
   assert.equal(await readFile(path, "utf8"), "REWRITTENTAIL\n",
     "the post-pager burst applies keys and paste in order");
 });
@@ -394,8 +435,8 @@ test("native More pager interaction stays ordered with paste bursts", async t =>
 test("Ctrl-C interrupts a busy native command without killing the editor", { timeout: 20_000 }, async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "interrupt.txt", "seed\n");
-  const marker = await makeFile(t, "busy.txt", "");
+  const path = await makeFile("interrupt.txt", "seed\n");
+  const marker = await makeFile("busy.txt", "");
   let exit: string | undefined;
   const editor = new NvimEditor(path, {
     cols: 72, rows: 12,
@@ -418,7 +459,7 @@ test("Ctrl-C interrupts a busy native command without killing the editor", { tim
 test("rapid resize reversals converge on the latest native grid width", async t => {
   if (!haveNvim) { t.skip("nvim is not on PATH"); return; }
   isolateNvimState(t);
-  const path = await makeFile(t, "resize.txt", "seed\n");
+  const path = await makeFile("resize.txt", "seed\n");
   const editor = new NvimEditor(path, {
     cols: 80, rows: 12,
     onReady: () => {},

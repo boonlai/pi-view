@@ -80,7 +80,7 @@ const KEY_BATCH_BYTES = 1024;
 
 // pi-tui KeyId base names → Neovim key notation inside <...>.
 const NOTATION_BY_KEY: Record<string, string> = {
-  escape: "Esc", enter: "CR", return: "CR", tab: "Tab", backspace: "BS", delete: "Del",
+  escape: "Esc", enter: "CR", return: "CR", tab: "Tab", backspace: "BS", delete: "Del", space: "Space",
   insert: "Insert", home: "Home", end: "End", pageUp: "PageUp", pageDown: "PageDown",
   up: "Up", down: "Down", left: "Left", right: "Right", clear: "Clear",
   f1: "F1", f2: "F2", f3: "F3", f4: "F4", f5: "F5", f6: "F6",
@@ -108,12 +108,16 @@ const LUA_SETUP = [
   "vim.o.undofile = false",
   "local runtime = vim.env.VIMRUNTIME",
   "if runtime and #runtime > 0 then",
+  "  local function pathKey(path)",
+  "    local key = path:gsub('\\\\', '/'):gsub('/+$', '')",
+  "    return vim.fn.has('win32') == 1 and key:lower() or key",
+  "  end",
   "  local roots = { runtime }",
   "  local paths = vim.api.nvim_list_runtime_paths()",
   "  for index, path in ipairs(paths) do",
-  "    if path == runtime then",
+  "    if pathKey(path) == pathKey(runtime) then",
   "      local library = paths[index + 1]",
-  "      if library and vim.fn.fnamemodify(library, ':t') == 'nvim' then roots[#roots + 1] = library end",
+  "      if library and pathKey(library):match('/nvim$') then roots[#roots + 1] = library end",
   "      break",
   "    end",
   "  end",
@@ -209,17 +213,19 @@ export class NvimEditor implements NvimEditingSession {
       // a retry, while the close/error events tell the story.
       child.stdin?.on("error", () => {});
       child.stderr?.on("error", () => {});
-      this.readStream(child.stdout!);
+      const reading = this.readStream(child.stdout!);
       child.stderr?.on("data", (chunk: Buffer) => this.rememberStderr(chunk));
       child.on("error", (error: NodeJS.ErrnoException) => {
         this.fail(error.code === "ENOENT"
           ? "Neovim is not installed or not on PATH; install nvim (>= 0.9) to edit previews"
           : `Could not launch Neovim: ${safeText(error.message)}`);
       });
-      // Finalize on "close", not "exit": the final VimLeavePre notify can
-      // still sit in stdout when the process dies, and finalizing early
-      // would misclassify a normal :q as a crash.
-      child.on("close", (code, signal) => this.onSessionEnd(code, signal));
+      // Stream closure can precede the async decoder consuming its final
+      // buffered notification, especially on Windows. Drain both first.
+      child.on("close", async (code, signal) => {
+        await reading;
+        this.onSessionEnd(code, signal);
+      });
       this.readyTimer = setTimeout(() => this.fail("Neovim did not start drawing within 10 seconds"), 10_000);
       this.readyTimer.unref();
       void this.handshake().catch(error => this.fail(error instanceof Error ? error.message : String(error)));
@@ -334,8 +340,8 @@ export class NvimEditor implements NvimEditingSession {
   }
 
   /** Consume the msgpack-rpc stream through the maintained codec. */
-  private readStream(stdout: Readable): void {
-    void (async () => {
+  private readStream(stdout: Readable): Promise<void> {
+    return (async () => {
       try {
         const chunks = async function* (stream: Readable): AsyncGenerator<Uint8Array> {
           for await (const chunk of stream) yield chunk as Buffer;
