@@ -96,7 +96,7 @@ Press **`e`** while previewing a text, code, or Markdown file to edit the actual
 
 - `:w` saves; `:q` / `:wq` return to the refreshed preview; `:q!` discards and returns. Normal Neovim protections stay intact—dirty `:q` refuses, and changed-on-disk warnings apply.
 - While editing, keys—including `Esc`, `Ctrl+C`, and the configured Quick Open shortcut—and the mouse wheel go to Neovim. Exit with `:q`, `:wq`, or `:q!` before opening another preview.
-- User startup files, plugins, ShaDa, and modelines are not loaded. Built-in filetype and syntax support remains available. This is a real local editor, not a sandbox: commands you enter can run programs.
+- User startup files and user plugins are not loaded; ShaDa and modelines are disabled. Built-in filetype and syntax support remains available. This is a real local editor, not a sandbox: commands you enter can run programs.
 - Forced shutdown attempts to preserve Neovim's swap file. If a swap survives, use Neovim's recovery prompt or `nvim -r <file>`; recovery is not a substitute for `:w`.
 - Missing or too-old Neovim shows an actionable message and the preview stays usable—press `e` again to retry.
 

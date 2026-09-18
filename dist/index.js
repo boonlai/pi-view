@@ -3901,7 +3901,7 @@ function attachMouse(tui, onWheel) {
 var import_msgpack = __toESM(require_dist(), 1);
 import { spawn as spawn2 } from "node:child_process";
 import { dirname as dirname2, resolve as resolvePath2 } from "node:path";
-import { getCapabilities as getCapabilities2, parseKey } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, getCapabilities as getCapabilities2, parseKey } from "@earendil-works/pi-tui";
 
 // src/nvim-grid.ts
 import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
@@ -4114,7 +4114,8 @@ function blankRows(height, width) {
 var MINIMUM_VERSION = 0 * 1e4 + 9 * 100 + 0;
 var PASTE_START = "\x1B[200~";
 var PASTE_END = "\x1B[201~";
-var MOUSE_PACKET = /^\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[MIDO]/;
+var MOUSE_PACKET = /^(?:\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[MIDO])/;
+var KEY_BATCH_BYTES = 1024;
 var NOTATION_BY_KEY = {
   escape: "Esc",
   enter: "CR",
@@ -4151,10 +4152,23 @@ var LUA_SETUP = [
   "vim.o.loadplugins = false",
   'vim.o.shadafile = "NONE"',
   "vim.o.undofile = false",
-  "local runtime = vim.env.VIMRUNTIME; if runtime and #runtime > 0 then vim.opt.runtimepath = { runtime } end",
+  "local runtime = vim.env.VIMRUNTIME",
+  "if runtime and #runtime > 0 then",
+  "  local roots = { runtime }",
+  "  local paths = vim.api.nvim_list_runtime_paths()",
+  "  for index, path in ipairs(paths) do",
+  "    if path == runtime then",
+  "      local library = paths[index + 1]",
+  "      if library and vim.fn.fnamemodify(library, ':t') == 'nvim' then roots[#roots + 1] = library end",
+  "      break",
+  "    end",
+  "  end",
+  "  vim.opt.runtimepath = roots",
+  "  vim.opt.packpath = roots",
+  "end",
   'vim.cmd("filetype plugin indent on")',
   'vim.cmd("syntax on")'
-].join("; ");
+].join(" ");
 var REGISTER_LUA = `local channel = ...
 local function report()
   local dirty = false
@@ -4194,11 +4208,17 @@ var NvimEditor = class {
   pasteTimer;
   killTimer;
   pasteBuffer;
+  // Non-fast RPC in flight (nvim_paste or the typeahead drain): Neovim
+  // answers it only from its main loop, so the FIFO halts behind it except
+  // for prompt-dismissing keys (see pumpInput).
+  nativeFlight;
   inputQueue = [];
   pumping = false;
   desired;
   sent = { cols: 0, rows: 0 };
+  resizeFlight;
   drawing = false;
+  attached = false;
   mode = "";
   _dirty = false;
   userExit = false;
@@ -4333,11 +4353,14 @@ var NvimEditor = class {
     this.rejectAll(new Error("Neovim session closed"));
     this.pasteBuffer = void 0;
   }
+  // Teardown best effort: the queue only ever holds input whose frames were
+  // never written (in-flight items live in pumpInput), so flushing can
+  // never replay bytes Neovim already received.
   flushQueueTo(child) {
     const items = this.inputQueue;
     this.inputQueue = [];
     for (const item of items) {
-      const params = item.kind === "paste" ? [item.text, true, -1] : [item.bytes.toString("utf8")];
+      const params = item.kind === "paste" ? [item.text, true, -1] : [item.bytes];
       try {
         child.stdin?.write((0, import_msgpack.encode)([0, this.nextId++, item.kind === "paste" ? "nvim_paste" : "nvim_input", params]));
       } catch {
@@ -4444,49 +4467,110 @@ var NvimEditor = class {
   }
   /** Queue notation or paste text; one FIFO keeps Neovim's input ordered. */
   enqueue(notation) {
-    if (!notation) return;
-    this.inputQueue.push({ kind: "keys", bytes: Buffer.from(notation, "utf8") });
-    void this.pumpInput();
+    let start = 0;
+    while (start < notation.length) {
+      const interrupt = this.drawing ? notation.indexOf("<C-C>", start) : -1;
+      const end = interrupt < 0 ? notation.length : interrupt;
+      if (end > start) {
+        this.inputQueue.push({ kind: "keys", bytes: Buffer.from(notation.slice(start, end), "utf8") });
+        void this.pumpInput();
+      }
+      if (interrupt < 0) return;
+      void this.request("nvim_input", [Buffer.from("<C-C>")]).catch(() => {
+      });
+      start = interrupt + 5;
+    }
   }
-  /** nvim_input may accept fewer bytes than queued; pump until drained. */
+  /**
+   * nvim_input may accept fewer bytes than queued; pump until drained. One
+   * FIFO keeps Neovim's input ordered — but the paste and drain RPCs on it
+   * are answered only from Neovim's main loop, so while one is in flight
+   * the pump still offers queued keys, one nvim_get_mode check each, for a
+   * blocking native prompt (pager, :confirm) to consume.
+   */
   async pumpInput() {
-    if (this.pumping) return;
+    if (this.pumping || this.finished || !this.drawing) return;
     this.pumping = true;
     try {
-      while (this.inputQueue.length > 0) {
-        if (this.finished) {
-          this.inputQueue.length = 0;
-          return;
-        }
-        if (!this.child) {
-          await delay(10);
+      while (this.inputQueue.length > 0 && !this.finished) {
+        if (this.nativeFlight) {
+          const index = this.inputQueue.findIndex((item2) => item2.kind === "keys");
+          if (index < 0) return;
+          let blocking = false;
+          try {
+            const mode = await this.request("nvim_get_mode", []);
+            blocking = mode.blocking === true;
+          } catch {
+            return;
+          }
+          if (!this.nativeFlight) continue;
+          if (!blocking) {
+            await Promise.race([this.nativeFlight, delay(5)]);
+            continue;
+          }
+          const consumed2 = await this.writeKeys(index, true);
+          if (consumed2 === void 0) return;
+          if (consumed2 === 0) await delay(5);
           continue;
         }
         const item = this.inputQueue[0];
         if (item.kind === "paste") {
           this.inputQueue.shift();
-          if (item.text) await this.request("nvim_paste", [item.text, true, -1]).catch(() => {
-          });
+          if (item.text) this.deferInput(this.sendPaste(item.text));
           continue;
         }
-        let written;
-        try {
-          written = await this.request("nvim_input", [item.bytes.toString("utf8")]);
-        } catch {
-          this.inputQueue.length = 0;
-          return;
-        }
-        const consumed = typeof written === "number" ? written : item.bytes.length;
-        if (consumed >= item.bytes.length) {
-          this.inputQueue.shift();
-        } else if (consumed > 0) {
-          this.inputQueue[0] = { kind: "keys", bytes: item.bytes.subarray(consumed) };
-        } else {
-          await delay(5);
-        }
+        const consumed = await this.writeKeys(0, false);
+        if (consumed === void 0) return;
+        if (consumed > 0) this.deferInput(this.request("nvim_eval", ["0"]));
+        else await delay(5);
       }
     } finally {
       this.pumping = false;
+    }
+  }
+  /** Keep ordinary FIFO ordering without blocking keys needed by native prompts. */
+  deferInput(request2) {
+    const flight = request2.then(() => {
+    }, () => {
+    }).finally(() => {
+      if (this.nativeFlight === flight) this.nativeFlight = void 0;
+      void this.pumpInput();
+    });
+    this.nativeFlight = flight;
+  }
+  /** Remove sent bytes before awaiting their ACK; teardown flushes only unsent data. */
+  async writeKeys(index, singleKey) {
+    const item = this.inputQueue[index];
+    const end = inputBatchEnd(item.bytes, singleKey);
+    const tail = end < item.bytes.length ? { kind: "keys", bytes: item.bytes.subarray(end) } : void 0;
+    if (tail) this.inputQueue[index] = tail;
+    else this.inputQueue.splice(index, 1);
+    let written;
+    try {
+      written = await this.request("nvim_input", [item.bytes.subarray(0, end)]);
+    } catch {
+      return void 0;
+    }
+    if (this.finished) return void 0;
+    const consumed = typeof written === "number" ? written : end;
+    if (consumed < end) {
+      if (tail && this.inputQueue[index] === tail) {
+        this.inputQueue[index] = { kind: "keys", bytes: item.bytes.subarray(consumed) };
+      } else {
+        this.inputQueue.splice(index, 0, { kind: "keys", bytes: item.bytes.subarray(consumed, end) });
+      }
+    }
+    return consumed;
+  }
+  /** Paste text; a failed RPC is echoed natively instead of surfacing here. */
+  async sendPaste(text) {
+    try {
+      await this.request("nvim_paste", [text, true, -1]);
+    } catch (error) {
+      if (this.finished) return;
+      const message = error instanceof Error ? error.message : describe(error);
+      await this.request("nvim_echo", [[[message, "ErrorMsg"]], true, {}]).catch(() => {
+      });
     }
   }
   /** Complete a bracketed paste at the end marker; flush stuck pastes late. */
@@ -4517,18 +4601,26 @@ var NvimEditor = class {
     if (tail) this.enqueue(translateKeys(tail));
   }
   applyResize() {
-    if (!this.drawing || this.finished) return;
+    if (!this.drawing || !this.attached || this.finished) return;
+    if (this.resizeFlight) return;
     if (this.desired.cols === this.sent.cols && this.desired.rows === this.sent.rows) return;
     const { cols, rows } = this.desired;
+    this.resizeFlight = { cols, rows };
     void this.request("nvim_ui_try_resize", [cols, rows]).then(() => {
       this.sent = { cols, rows };
-    }).catch(() => {
+      this.resizeFlight = void 0;
+      this.applyResize();
+    }, () => {
+      this.resizeFlight = void 0;
+      if (cols !== this.desired.cols || rows !== this.desired.rows) this.applyResize();
     });
   }
   async attach() {
     const { cols, rows } = this.desired;
     await this.request("nvim_ui_attach", [cols, rows, { rgb: true, ext_linegrid: true }]);
     this.sent = { cols, rows };
+    this.attached = true;
+    this.applyResize();
   }
   checkVersion(info) {
     const metadata = Array.isArray(info) ? info[1] : void 0;
@@ -4565,7 +4657,9 @@ var NvimEditor = class {
     this.drawing = true;
     clearTimeout(this.readyTimer);
     this.readyTimer = void 0;
+    this.applyResize();
     this.options.onReady();
+    void this.pumpInput();
   }
   /** Terminal failure: report an actionable message, keep the preview alive. */
   fail(message) {
@@ -4590,14 +4684,38 @@ var NvimEditor = class {
   }
 };
 function translateKeys(data) {
-  if (!data || MOUSE_PACKET.test(data)) return "";
-  const key = parseKey(data);
-  if (key !== void 0) return notationFor(key);
-  return literalNotation(data);
+  let out = "";
+  for (let offset = 0; offset < data.length; ) {
+    if (data[offset] !== "\x1B") {
+      const next = data.indexOf("\x1B", offset);
+      const end = next < 0 ? data.length : next;
+      out += literalNotation(data.slice(offset, end));
+      offset = end;
+      continue;
+    }
+    const rest = data.slice(offset);
+    const sequence = rest.startsWith("\x1B[M") ? rest.slice(0, 6) : /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)/u.exec(rest)?.[0] ?? "\x1B";
+    offset += sequence.length;
+    if (MOUSE_PACKET.test(sequence) || /^\x1b\[[\d:]+;\d+:3(?:;[\d:]+)?u$/.test(sequence)) continue;
+    const printable = decodeKittyPrintable(sequence);
+    const point = printable?.codePointAt(0);
+    if (printable !== void 0 && point !== void 0 && !(point >= 57344 && point <= 63743) && !/^[a-z]$/i.test(printable)) {
+      out += literalNotation(printable);
+      continue;
+    }
+    const key = parseKey(sequence);
+    out += key !== void 0 ? notationFor(key) : literalNotation(sequence);
+  }
+  return out;
 }
 function notationFor(keyId) {
-  const modifiers = keyId.split("+");
-  const base = modifiers.pop() ?? "";
+  const modifiers = [];
+  let base = keyId;
+  const modifierPrefix = /^(ctrl|alt|meta|super|shift)\+(.+)$/;
+  for (let match = modifierPrefix.exec(base); match !== null; match = modifierPrefix.exec(base)) {
+    modifiers.push(match[1]);
+    base = match[2];
+  }
   if (modifiers.length === 0) {
     if (base === "space") return " ";
     if (base.length === 1) return base === "<" ? "<LT>" : base;
@@ -4636,7 +4754,7 @@ function literalNotation(text) {
       out += "<BS>";
       continue;
     }
-    const code = char.charCodeAt(0);
+    const code = char.codePointAt(0);
     if (code === 0) {
       out += "<C-@>";
       continue;
@@ -4648,6 +4766,25 @@ function literalNotation(text) {
     out += char;
   }
   return out;
+}
+function inputBatchEnd(bytes, singleKey) {
+  let end = 0;
+  while (end < bytes.length) {
+    let next;
+    if (bytes[end] === 60) {
+      let base = end + 1;
+      while (bytes[base + 1] === 45) base += 2;
+      next = bytes.indexOf(62, base + (bytes[base] === 62 ? 1 : 0)) + 1;
+      if (next === 0) next = bytes.length;
+    } else {
+      const byte = bytes[end];
+      next = end + (byte < 128 ? 1 : byte < 224 ? 2 : byte < 240 ? 3 : 4);
+    }
+    if (end > 0 && next > KEY_BATCH_BYTES) break;
+    end = Math.min(next, bytes.length);
+    if (singleKey) break;
+  }
+  return end;
 }
 function delay(ms) {
   const { promise, resolve: resolve4 } = Promise.withResolvers();
