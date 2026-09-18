@@ -118,34 +118,46 @@ omp_env="$(host_path "$omp_bin")"
 echo "PI_VIEW_OMP=$omp_env" >> "$GITHUB_ENV"
 
 # --- Poppler (PDF-backed tests) ----------------------------------------------
-if command -v pdftoppm >/dev/null 2>&1; then
-	echo "Poppler already present on PATH: $(command -v pdftoppm)"
-else
-	case "$os" in
-		linux)
+# The Windows runner image ships an inherited Xpdf toolchain (xpdfreader.com)
+# whose same-named pdftoppm/pdftotext/pdfinfo are NOT Poppler, so existing
+# binaries are not trusted there: real Poppler is always installed and its
+# directory is written last to GITHUB_PATH, which the runner puts first on
+# PATH, so all three tools resolve to the same Poppler install. On Linux the
+# image ships real poppler-utils (kept when present); macOS installs via brew.
+case "$os" in
+	linux)
+		if command -v pdftoppm >/dev/null 2>&1; then
+			echo "Poppler already present on PATH: $(command -v pdftoppm)"
+		else
 			echo "Installing Poppler via apt..."
 			sudo apt-get update -qq
 			sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends poppler-utils
-			;;
-		darwin)
+		fi
+		;;
+	darwin)
+		if command -v pdftoppm >/dev/null 2>&1; then
+			echo "Poppler already present on PATH: $(command -v pdftoppm)"
+		else
 			echo "Installing Poppler via Homebrew..."
 			brew install poppler
-			;;
-		windows)
-			echo "Installing Poppler via Chocolatey..."
-			choco install poppler -y --no-progress
-			shopt -s nullglob
-			poppler_bins=(/c/ProgramData/chocolatey/lib/poppler/tools/poppler-*/Library/bin)
-			shopt -u nullglob
-			if [ "${#poppler_bins[@]}" -eq 0 ]; then
-				echo "::error::chocolatey installed poppler, but no */Library/bin directory was found"
-				exit 1
-			fi
-			poppler_bin="${poppler_bins[${#poppler_bins[@]}-1]}"
-			echo "$(host_path "$poppler_bin")" >> "$GITHUB_PATH" # chocolatey does not add this to PATH itself
-			;;
-	esac
-fi
+		fi
+		;;
+	windows)
+		echo "Installing Poppler via Chocolatey (image may carry same-named Xpdf tools, which are not Poppler)..."
+		choco install poppler -y --no-progress
+		shopt -s nullglob
+		poppler_bins=(/c/ProgramData/chocolatey/lib/poppler/tools/poppler-*/Library/bin)
+		shopt -u nullglob
+		if [ "${#poppler_bins[@]}" -eq 0 ]; then
+			echo "::error::chocolatey installed poppler, but no */Library/bin directory was found"
+			exit 1
+		fi
+		poppler_bin="${poppler_bins[${#poppler_bins[@]}-1]}"
+		# Written after the nvim/omp entries, and the runner prepends GITHUB_PATH
+		# entries, so this directory ends up ahead of any inherited Xpdf tools.
+		echo "$(host_path "$poppler_bin")" >> "$GITHUB_PATH" # chocolatey does not add this to PATH itself
+		;;
+esac
 
 echo "Tool setup complete:"
 echo "  nvim: $(host_path "$nvim_bin_dir/bin") (on PATH)"

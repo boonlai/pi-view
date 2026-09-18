@@ -34,6 +34,11 @@ for poppler_tool in pdftoppm pdfinfo pdftotext; do
 	if ! poppler_output="$("$poppler_tool" -v 2>&1)"; then
 		fail "$poppler_tool -v exited nonzero; output: $poppler_output"
 	fi
+	case "$poppler_output" in
+		*xpdf* | *Xpdf*)
+			fail "$poppler_tool is Xpdf, not Poppler; an inherited toolchain is shadowing the Poppler install. output: $poppler_output"
+			;;
+	esac
 	poppler_line="${poppler_output%%$'\n'*}"
 	case "$poppler_line" in
 		"$poppler_tool version "*) ;;
