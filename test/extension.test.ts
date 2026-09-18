@@ -333,7 +333,7 @@ test("Recents record regular-file opens through the viewer callback, not directo
 test("Forced Tab uses the extension path grammar for both command aliases", async t => {
   const app = await host(t);
   await mkdir(join(app.cwd, "my docs"));
-  const name = 'a "quoted" file.ts';
+  const name = process.platform === "win32" ? "a 'quoted' file.ts" : 'a "quoted" file.ts';
   await writeFile(join(app.cwd, "my docs", name), "fixture");
   const original = new CombinedAutocompleteProvider([], app.cwd);
   const provider = app.provider()!(original);
