@@ -120,26 +120,32 @@ echo "PI_VIEW_OMP=$omp_env" >> "$GITHUB_ENV"
 # --- Poppler (PDF-backed tests) ----------------------------------------------
 # The Windows runner image ships an inherited Xpdf toolchain (xpdfreader.com)
 # whose same-named pdftoppm/pdftotext/pdfinfo are NOT Poppler, so existing
-# binaries are not trusted there: real Poppler is always installed and its
-# directory is written last to GITHUB_PATH, which the runner puts first on
-# PATH, so all three tools resolve to the same Poppler install. On Linux the
-# image ships real poppler-utils (kept when present); macOS installs via brew.
+# binaries are never trusted on Windows: real Poppler is always installed
+# there. Runner Git Bash also re-orders PATH at launch, so GITHUB_PATH alone
+# cannot guarantee selection — the chosen directory is therefore exported as
+# PI_VIEW_POPPLER_BIN, and preflight.sh and the test step put it at the front
+# of PATH themselves. On Linux the image ships real poppler-utils (kept when
+# present); macOS installs via brew.
 case "$os" in
 	linux)
 		if command -v pdftoppm >/dev/null 2>&1; then
 			echo "Poppler already present on PATH: $(command -v pdftoppm)"
+			poppler_bindir="$(dirname "$(command -v pdftoppm)")"
 		else
 			echo "Installing Poppler via apt..."
 			sudo apt-get update -qq
 			sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends poppler-utils
+			poppler_bindir="$(dirname "$(command -v pdftoppm)")"
 		fi
 		;;
 	darwin)
 		if command -v pdftoppm >/dev/null 2>&1; then
 			echo "Poppler already present on PATH: $(command -v pdftoppm)"
+			poppler_bindir="$(dirname "$(command -v pdftoppm)")"
 		else
 			echo "Installing Poppler via Homebrew..."
 			brew install poppler
+			poppler_bindir="$(dirname "$(command -v pdftoppm)")"
 		fi
 		;;
 	windows)
@@ -152,13 +158,15 @@ case "$os" in
 			echo "::error::chocolatey installed poppler, but no */Library/bin directory was found"
 			exit 1
 		fi
-		poppler_bin="${poppler_bins[${#poppler_bins[@]}-1]}"
-		# Written after the nvim/omp entries, and the runner prepends GITHUB_PATH
-		# entries, so this directory ends up ahead of any inherited Xpdf tools.
-		echo "$(host_path "$poppler_bin")" >> "$GITHUB_PATH" # chocolatey does not add this to PATH itself
+		poppler_bindir="${poppler_bins[${#poppler_bins[@]}-1]}"
+		echo "$(host_path "$poppler_bindir")" >> "$GITHUB_PATH" # chocolatey does not add this to PATH itself
 		;;
 esac
+if [ -n "${poppler_bindir:-}" ]; then
+	echo "PI_VIEW_POPPLER_BIN=$(host_path "$poppler_bindir")" >> "$GITHUB_ENV"
+fi
 
 echo "Tool setup complete:"
 echo "  nvim: $(host_path "$nvim_bin_dir/bin") (on PATH)"
 echo "  omp:  $omp_env (on PATH and in PI_VIEW_OMP)"
+echo "  poppler: ${poppler_bindir:-MISSING} (front of PATH in later steps via PI_VIEW_POPPLER_BIN)"

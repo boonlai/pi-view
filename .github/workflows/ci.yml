@@ -46,4 +46,13 @@ jobs:
           npm run build
           node ci/check-dist.mjs
       - name: Test
-        run: npm test
+        run: |
+          # setup-tools' chosen Poppler directory goes in front of PATH so
+          # node's child processes cannot resolve inherited Xpdf tools (Windows).
+          if [ -n "${PI_VIEW_POPPLER_BIN:-}" ]; then
+            poppler_bin="$PI_VIEW_POPPLER_BIN"
+            # Drive paths (C:/...) must become POSIX before a colon-separated PATH.
+            if command -v cygpath >/dev/null 2>&1; then poppler_bin="$(cygpath -u "$poppler_bin")"; fi
+            export PATH="$poppler_bin:$PATH"
+          fi
+          npm test

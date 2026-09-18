@@ -9,6 +9,26 @@ fail() {
 	exit 1
 }
 
+# Runner Git Bash re-orders PATH at launch, which can bury the setup-exported
+# Poppler directory beneath inherited same-named Xpdf tools (seen on Windows).
+# Re-front it explicitly and show exactly what resolves before probing.
+if [ -n "${PI_VIEW_POPPLER_BIN:-}" ]; then
+	poppler_posix="$PI_VIEW_POPPLER_BIN"
+	# Windows values are drive paths (C:/...); bash PATH is colon-separated, so
+	# convert to a POSIX path first or the drive colon splits the entry apart.
+	if command -v cygpath >/dev/null 2>&1; then
+		poppler_posix="$(cygpath -u "$PI_VIEW_POPPLER_BIN")"
+	fi
+	export PATH="$poppler_posix:$PATH"
+	echo "Poppler bin (front of PATH): $PI_VIEW_POPPLER_BIN"
+	echo "PATH: $PATH"
+	echo "pdftotext resolves to: $(command -v pdftotext)"
+	type -a pdftotext 2>&1 | sed 's/^/  type -a: /' || true
+	if command -v where.exe >/dev/null 2>&1; then
+		where.exe pdftotext 2>/dev/null | sed 's/^/  where: /' || true
+	fi
+fi
+
 node_version="$(node --version)" || fail "node is not on PATH"
 [ "$node_version" = "v22.22.0" ] || fail "node is $node_version, expected v22.22.0"
 
