@@ -137,11 +137,29 @@ test("symlinks to directories descend; broken symlinks complete as files", () =>
 });
 
 test("tilde completions preserve the ~ prefix", () => {
-	const items = completePath("~", tmp)!;
-	assert.ok(items.length > 0);
-	for (const item of items) {
-		assert.ok(item.value.startsWith("~/"), item.value);
-		assert.ok(resolvePath(item.value, tmp).startsWith(homedir()), item.value);
+	// The real user home is arbitrary (and may contain spaced names that are
+	// legally quoted), so the test completes against an isolated temp home.
+	const home = mkdtempSync(path.join(tmpdir(), "pi-view-paths-home-"));
+	writeFileSync(path.join(home, "home-file.txt"), "h");
+	mkdirSync(path.join(home, "spaced dir"));
+	const previousHome = process.env.HOME;
+	const previousUserprofile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home; // Windows: os.homedir() reads USERPROFILE, not HOME
+	try {
+		const items = completePath("~", tmp)!;
+		const plain = items.find(item => item.label === "home-file.txt");
+		assert.ok(plain, "plain home entry must complete");
+		assert.ok(plain.value.startsWith("~/"), plain.value); // tilde spelling survives unquoted
+		assert.equal(resolvePath(plain.value, tmp), path.join(home, "home-file.txt"));
+		const spaced = items.find(item => item.label === "spaced dir/");
+		assert.ok(spaced, "spaced home entry must complete");
+		assert.equal(spaced.value, '"~/spaced dir/'); // spaced entries keep the ~ under optional quoting
+		assert.equal(resolvePath(spaced.value, tmp), path.join(home, "spaced dir"));
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+		if (previousUserprofile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserprofile;
+		rmSync(home, { recursive: true, force: true });
 	}
 });
 
