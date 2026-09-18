@@ -207,6 +207,51 @@ test("Clicking the footer Lines control toggles numbering like the l key", async
   assert.equal(readLineNumbers(file), true, "a footer click persists like the keyboard toggle");
 });
 
+test("Numbering controls never overlay image display, even when remembered on", async t => {
+  const file = await isolateState(t);
+  const dir = await mkdtemp(join(tmpdir(), "pi-view-lines-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, "note.md"), "# Heading\n\n![pic](pic.png)\n");
+  writeLineNumbers(file, true);
+  const previousImages = process.env.PI_VIEW_IMAGES;
+  process.env.PI_VIEW_IMAGES = "off";
+  t.after(() => {
+    if (previousImages === undefined) delete process.env.PI_VIEW_IMAGES; else process.env.PI_VIEW_IMAGES = previousImages;
+  });
+
+  const { viewer } = makeViewer(t, join(dir, "note.md"));
+  const rendered = await screen(viewer, value => value.includes("pic.png"));
+  assert.doesNotMatch(rendered, /1 │/, "rendered Markdown keeps its semantics");
+  viewer.handleInput("i");
+  const focused = stripVTControlCharacters(viewer.render(72).join("\n"));
+  assert.match(focused, /zoom/, "image controls take over the footer");
+  assert.doesNotMatch(focused, /\[l Lines:/, "no numbering chip over image controls");
+  viewer.handleInput("b");
+  await screen(viewer, value => value.includes("pic.png"));
+  viewer.handleInput("s");
+  viewer.handleInput("i"); // batched right after s: stale image focus must not apply
+  const source = await screen(viewer, value => value.includes("![pic](pic.png)"));
+  assert.match(source, /\[l Lines: on\]/, "the source view keeps the numbering control");
+  assert.doesNotMatch(source, /zoom/, "stale image focus cannot hijack the source view");
+});
+
+test("Markdown source hint stays out of panels where s is inert", async t => {
+  const file = await isolateState(t);
+  const dir = await mkdtemp(join(tmpdir(), "pi-view-lines-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, "note.md"), "# Heading\n\nBody text\n");
+
+  const { viewer } = makeViewer(t, join(dir, "note.md"));
+  const rendered = await screen(viewer, value => value.includes("Heading"));
+  assert.match(rendered, /Lines: s source/, "the rendered view advertises source numbering");
+  viewer.handleInput("?");
+  const help = await screen(viewer, value => value.startsWith("pi-view"));
+  assert.doesNotMatch(help, /Lines: s source/, "panels never advertise the inert s toggle");
+  viewer.handleInput("b");
+  const back = await screen(viewer, value => value.includes("Heading"));
+  assert.match(back, /Lines: s source/, "the hint returns on the document view");
+});
+
 test("attachMouse reports primary presses as clicks and keeps wheel working", () => {
   const clicks: Array<[number, number]> = [];
   const wheels: number[] = [];

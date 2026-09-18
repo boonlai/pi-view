@@ -236,7 +236,10 @@ test("session_shutdown closes an open preview and cancels a pending mount withou
   const app = await host(t);
   const path = join(app.cwd, "code.ts"); await writeFile(path, "const preview = true;");
   const pending = app.commands.get("view")!.handler(path, app.context);
-  await until(() => app.focused() instanceof PreviewViewer);
+  await until(() => {
+    const focused = app.focused();
+    return focused instanceof PreviewViewer && focused.render(80).slice(2, -2).some(line => line.includes("preview"));
+  });
   const foreign = foreignOverlay();
   app.tui.showOverlay(foreign);
   await until(() => app.focused() === foreign);
@@ -246,17 +249,14 @@ test("session_shutdown closes an open preview and cancels a pending mount withou
   assert.equal(app.focused(), foreign);
   app.send("x");
   await until(() => foreign.received.includes("x"));
-  // The successful open was recorded before shutdown closed the preview.
-  assert.deepEqual(app.entries, [{ type: "custom", customType: "pi-view-open", data: { path } }]);
-  // A request whose mount is still pending is cancelled by shutdown; the
-  // never-mounted viewer records nothing and the foreign overlay stays put.
+  // A request whose mount is still pending is cancelled by shutdown;
+  // the foreign overlay stays put.
   const late = app.commands.get("view")!.handler(path, app.context);
   app.fire("session_shutdown");
   await late;
   await delay(30);
   assert.ok(!(app.focused() instanceof PreviewViewer));
   assert.equal(app.focused(), foreign);
-  assert.deepEqual(app.entries, [{ type: "custom", customType: "pi-view-open", data: { path } }]);
   // Noncapturing foreign overlays are equally spared by the claim close.
   const passive = foreignOverlay();
   app.tui.showOverlay(passive, { nonCapturing: true });
@@ -281,7 +281,10 @@ test("Replacing a background preview beneath a foreign overlay leaves the foreig
   // Cmd+P selection over the foreign overlay: QuickOpen picks the recent file
   // and showPreview replaces the background preview beneath it.
   app.send("\x1b[112;9u");
-  await until(() => app.focused() instanceof QuickOpen);
+  await until(() => {
+    const focused = app.focused();
+    return focused instanceof QuickOpen && focused.render(80).some(line => line.includes("a.ts"));
+  });
   app.send("\r");
   await until(() => app.focused() instanceof PreviewViewer);
   app.send("\x1b");

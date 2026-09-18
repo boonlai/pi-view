@@ -2520,9 +2520,11 @@ var PreviewViewer = class {
     this.redraw();
   }
   // Numbering applies to text/code and Markdown source rows only — never to
-  // rendered Markdown, extracted PDF text, panels, the picker or images.
+  // rendered Markdown, extracted PDF text, panels, the picker, or any image
+  // display (the imageMode guard also absorbs a stale focused image from
+  // batched input arriving between a source toggle and its repaint).
   get numbersEligible() {
-    return !this.panel && !this.picker && (this.document?.kind === "text" || this.document?.kind === "markdown" && this.source);
+    return !this.panel && !this.picker && !this.imageMode() && (this.document?.kind === "text" || this.document?.kind === "markdown" && this.source);
   }
   toggleNumbers() {
     if (!this.numbersEligible) return;
@@ -2615,6 +2617,7 @@ var PreviewViewer = class {
     if (data === "s" && !this.panel && (this.document?.kind === "markdown" || this.document?.kind === "pdf")) {
       this.source = !this.source;
       this.focusImage = void 0;
+      this.visibleImages = [];
       this.offset = 0;
       this.clearFrames();
       if (this.source && this.document.kind === "pdf" && this.pdfSource === void 0) void this.loadPdfText();
@@ -3044,7 +3047,7 @@ var PreviewViewer = class {
         const chip = `[l Lines: ${this.numbers ? "on" : "off"}]`;
         this.linesChip = { row: this.bodyHeight + 3, end: visibleWidth(chip) };
         statusLine = `${this.theme.fg("accent", chip)} \xB7 ${statusLine}`;
-      } else if (!this.imageMode() && this.document?.kind === "markdown" && !this.source) {
+      } else if (!this.imageMode() && this.document?.kind === "markdown" && !this.source && !this.panel) {
         statusLine = `${this.theme.fg("muted", "Lines: s source")} \xB7 ${statusLine}`;
       }
     }
