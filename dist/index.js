@@ -1,3 +1,1742 @@
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __commonJS = (cb, mod) => function __require() {
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+
+// node_modules/@msgpack/msgpack/dist.cjs/utils/utf8.cjs
+var require_utf8 = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/utils/utf8.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.utf8Count = utf8Count;
+    exports.utf8EncodeJs = utf8EncodeJs;
+    exports.utf8EncodeTE = utf8EncodeTE;
+    exports.utf8Encode = utf8Encode;
+    exports.utf8DecodeJs = utf8DecodeJs;
+    exports.utf8DecodeTD = utf8DecodeTD;
+    exports.utf8Decode = utf8Decode;
+    function utf8Count(str) {
+      const strLength = str.length;
+      let byteLength = 0;
+      let pos = 0;
+      while (pos < strLength) {
+        let value = str.charCodeAt(pos++);
+        if ((value & 4294967168) === 0) {
+          byteLength++;
+          continue;
+        } else if ((value & 4294965248) === 0) {
+          byteLength += 2;
+        } else {
+          if (value >= 55296 && value <= 56319) {
+            if (pos < strLength) {
+              const extra = str.charCodeAt(pos);
+              if ((extra & 64512) === 56320) {
+                ++pos;
+                value = ((value & 1023) << 10) + (extra & 1023) + 65536;
+              }
+            }
+          }
+          if ((value & 4294901760) === 0) {
+            byteLength += 3;
+          } else {
+            byteLength += 4;
+          }
+        }
+      }
+      return byteLength;
+    }
+    function utf8EncodeJs(str, output, outputOffset) {
+      const strLength = str.length;
+      let offset = outputOffset;
+      let pos = 0;
+      while (pos < strLength) {
+        let value = str.charCodeAt(pos++);
+        if ((value & 4294967168) === 0) {
+          output[offset++] = value;
+          continue;
+        } else if ((value & 4294965248) === 0) {
+          output[offset++] = value >> 6 & 31 | 192;
+        } else {
+          if (value >= 55296 && value <= 56319) {
+            if (pos < strLength) {
+              const extra = str.charCodeAt(pos);
+              if ((extra & 64512) === 56320) {
+                ++pos;
+                value = ((value & 1023) << 10) + (extra & 1023) + 65536;
+              }
+            }
+          }
+          if ((value & 4294901760) === 0) {
+            output[offset++] = value >> 12 & 15 | 224;
+            output[offset++] = value >> 6 & 63 | 128;
+          } else {
+            output[offset++] = value >> 18 & 7 | 240;
+            output[offset++] = value >> 12 & 63 | 128;
+            output[offset++] = value >> 6 & 63 | 128;
+          }
+        }
+        output[offset++] = value & 63 | 128;
+      }
+    }
+    var sharedTextEncoder = new TextEncoder();
+    var TEXT_ENCODER_THRESHOLD = 50;
+    function utf8EncodeTE(str, output, outputOffset) {
+      sharedTextEncoder.encodeInto(str, output.subarray(outputOffset));
+    }
+    function utf8Encode(str, output, outputOffset) {
+      if (str.length > TEXT_ENCODER_THRESHOLD) {
+        utf8EncodeTE(str, output, outputOffset);
+      } else {
+        utf8EncodeJs(str, output, outputOffset);
+      }
+    }
+    var CHUNK_SIZE = 4096;
+    function utf8DecodeJs(bytes, inputOffset, byteLength) {
+      let offset = inputOffset;
+      const end = offset + byteLength;
+      const units = [];
+      let result = "";
+      while (offset < end) {
+        const byte1 = bytes[offset++];
+        if ((byte1 & 128) === 0) {
+          units.push(byte1);
+        } else if ((byte1 & 224) === 192) {
+          const byte2 = bytes[offset++] & 63;
+          units.push((byte1 & 31) << 6 | byte2);
+        } else if ((byte1 & 240) === 224) {
+          const byte2 = bytes[offset++] & 63;
+          const byte3 = bytes[offset++] & 63;
+          units.push((byte1 & 31) << 12 | byte2 << 6 | byte3);
+        } else if ((byte1 & 248) === 240) {
+          const byte2 = bytes[offset++] & 63;
+          const byte3 = bytes[offset++] & 63;
+          const byte4 = bytes[offset++] & 63;
+          let unit = (byte1 & 7) << 18 | byte2 << 12 | byte3 << 6 | byte4;
+          if (unit > 65535) {
+            unit -= 65536;
+            units.push(unit >>> 10 & 1023 | 55296);
+            unit = 56320 | unit & 1023;
+          }
+          units.push(unit);
+        } else {
+          units.push(byte1);
+        }
+        if (units.length >= CHUNK_SIZE) {
+          result += String.fromCharCode(...units);
+          units.length = 0;
+        }
+      }
+      if (units.length > 0) {
+        result += String.fromCharCode(...units);
+      }
+      return result;
+    }
+    var sharedTextDecoder = new TextDecoder();
+    var TEXT_DECODER_THRESHOLD = 200;
+    function utf8DecodeTD(bytes, inputOffset, byteLength) {
+      const stringBytes = bytes.subarray(inputOffset, inputOffset + byteLength);
+      return sharedTextDecoder.decode(stringBytes);
+    }
+    function utf8Decode(bytes, inputOffset, byteLength) {
+      if (byteLength > TEXT_DECODER_THRESHOLD) {
+        return utf8DecodeTD(bytes, inputOffset, byteLength);
+      } else {
+        return utf8DecodeJs(bytes, inputOffset, byteLength);
+      }
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/ExtData.cjs
+var require_ExtData = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/ExtData.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.ExtData = void 0;
+    var ExtData = class {
+      type;
+      data;
+      constructor(type, data) {
+        this.type = type;
+        this.data = data;
+      }
+    };
+    exports.ExtData = ExtData;
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/DecodeError.cjs
+var require_DecodeError = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/DecodeError.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.DecodeError = void 0;
+    var DecodeError2 = class _DecodeError extends Error {
+      constructor(message) {
+        super(message);
+        const proto = Object.create(_DecodeError.prototype);
+        Object.setPrototypeOf(this, proto);
+        Object.defineProperty(this, "name", {
+          configurable: true,
+          enumerable: false,
+          value: _DecodeError.name
+        });
+      }
+    };
+    exports.DecodeError = DecodeError2;
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/utils/int.cjs
+var require_int = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/utils/int.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.UINT32_MAX = void 0;
+    exports.setUint64 = setUint64;
+    exports.setInt64 = setInt64;
+    exports.getInt64 = getInt64;
+    exports.getUint64 = getUint64;
+    exports.UINT32_MAX = 4294967295;
+    function setUint64(view, offset, value) {
+      const high = value / 4294967296;
+      const low = value;
+      view.setUint32(offset, high);
+      view.setUint32(offset + 4, low);
+    }
+    function setInt64(view, offset, value) {
+      const high = Math.floor(value / 4294967296);
+      const low = value;
+      view.setUint32(offset, high);
+      view.setUint32(offset + 4, low);
+    }
+    function getInt64(view, offset) {
+      const high = view.getInt32(offset);
+      const low = view.getUint32(offset + 4);
+      return high * 4294967296 + low;
+    }
+    function getUint64(view, offset) {
+      const high = view.getUint32(offset);
+      const low = view.getUint32(offset + 4);
+      return high * 4294967296 + low;
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/timestamp.cjs
+var require_timestamp = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/timestamp.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.timestampExtension = exports.EXT_TIMESTAMP = void 0;
+    exports.encodeTimeSpecToTimestamp = encodeTimeSpecToTimestamp;
+    exports.encodeDateToTimeSpec = encodeDateToTimeSpec;
+    exports.encodeTimestampExtension = encodeTimestampExtension;
+    exports.decodeTimestampToTimeSpec = decodeTimestampToTimeSpec;
+    exports.decodeTimestampExtension = decodeTimestampExtension;
+    var DecodeError_ts_1 = require_DecodeError();
+    var int_ts_1 = require_int();
+    exports.EXT_TIMESTAMP = -1;
+    var TIMESTAMP32_MAX_SEC = 4294967296 - 1;
+    var TIMESTAMP64_MAX_SEC = 17179869184 - 1;
+    function encodeTimeSpecToTimestamp({ sec, nsec }) {
+      if (sec >= 0 && nsec >= 0 && sec <= TIMESTAMP64_MAX_SEC) {
+        if (nsec === 0 && sec <= TIMESTAMP32_MAX_SEC) {
+          const rv = new Uint8Array(4);
+          const view = new DataView(rv.buffer);
+          view.setUint32(0, sec);
+          return rv;
+        } else {
+          const secHigh = sec / 4294967296;
+          const secLow = sec & 4294967295;
+          const rv = new Uint8Array(8);
+          const view = new DataView(rv.buffer);
+          view.setUint32(0, nsec << 2 | secHigh & 3);
+          view.setUint32(4, secLow);
+          return rv;
+        }
+      } else {
+        const rv = new Uint8Array(12);
+        const view = new DataView(rv.buffer);
+        view.setUint32(0, nsec);
+        (0, int_ts_1.setInt64)(view, 4, sec);
+        return rv;
+      }
+    }
+    function encodeDateToTimeSpec(date) {
+      const msec = date.getTime();
+      const sec = Math.floor(msec / 1e3);
+      const nsec = (msec - sec * 1e3) * 1e6;
+      const nsecInSec = Math.floor(nsec / 1e9);
+      return {
+        sec: sec + nsecInSec,
+        nsec: nsec - nsecInSec * 1e9
+      };
+    }
+    function encodeTimestampExtension(object) {
+      if (object instanceof Date) {
+        const timeSpec = encodeDateToTimeSpec(object);
+        return encodeTimeSpecToTimestamp(timeSpec);
+      } else {
+        return null;
+      }
+    }
+    function decodeTimestampToTimeSpec(data) {
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      switch (data.byteLength) {
+        case 4: {
+          const sec = view.getUint32(0);
+          const nsec = 0;
+          return { sec, nsec };
+        }
+        case 8: {
+          const nsec30AndSecHigh2 = view.getUint32(0);
+          const secLow32 = view.getUint32(4);
+          const sec = (nsec30AndSecHigh2 & 3) * 4294967296 + secLow32;
+          const nsec = nsec30AndSecHigh2 >>> 2;
+          return { sec, nsec };
+        }
+        case 12: {
+          const sec = (0, int_ts_1.getInt64)(view, 4);
+          const nsec = view.getUint32(0);
+          return { sec, nsec };
+        }
+        default:
+          throw new DecodeError_ts_1.DecodeError(`Unrecognized data size for timestamp (expected 4, 8, or 12): ${data.length}`);
+      }
+    }
+    function decodeTimestampExtension(data) {
+      const timeSpec = decodeTimestampToTimeSpec(data);
+      return new Date(timeSpec.sec * 1e3 + timeSpec.nsec / 1e6);
+    }
+    exports.timestampExtension = {
+      type: exports.EXT_TIMESTAMP,
+      encode: encodeTimestampExtension,
+      decode: decodeTimestampExtension
+    };
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/ExtensionCodec.cjs
+var require_ExtensionCodec = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/ExtensionCodec.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.ExtensionCodec = void 0;
+    var ExtData_ts_1 = require_ExtData();
+    var timestamp_ts_1 = require_timestamp();
+    var ExtensionCodec = class _ExtensionCodec {
+      static defaultCodec = new _ExtensionCodec();
+      // ensures ExtensionCodecType<X> matches ExtensionCodec<X>
+      // this will make type errors a lot more clear
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      __brand;
+      // built-in extensions
+      builtInEncoders = [];
+      builtInDecoders = [];
+      // custom extensions
+      encoders = [];
+      decoders = [];
+      constructor() {
+        this.register(timestamp_ts_1.timestampExtension);
+      }
+      register({ type, encode: encode2, decode }) {
+        if (type >= 0) {
+          this.encoders[type] = encode2;
+          this.decoders[type] = decode;
+        } else {
+          const index = -1 - type;
+          this.builtInEncoders[index] = encode2;
+          this.builtInDecoders[index] = decode;
+        }
+      }
+      tryToEncode(object, context) {
+        for (let i = 0; i < this.builtInEncoders.length; i++) {
+          const encodeExt = this.builtInEncoders[i];
+          if (encodeExt != null) {
+            const data = encodeExt(object, context);
+            if (data != null) {
+              const type = -1 - i;
+              return new ExtData_ts_1.ExtData(type, data);
+            }
+          }
+        }
+        for (let i = 0; i < this.encoders.length; i++) {
+          const encodeExt = this.encoders[i];
+          if (encodeExt != null) {
+            const data = encodeExt(object, context);
+            if (data != null) {
+              const type = i;
+              return new ExtData_ts_1.ExtData(type, data);
+            }
+          }
+        }
+        if (object instanceof ExtData_ts_1.ExtData) {
+          return object;
+        }
+        return null;
+      }
+      decode(data, type, context) {
+        const decodeExt = type < 0 ? this.builtInDecoders[-1 - type] : this.decoders[type];
+        if (decodeExt) {
+          return decodeExt(data, type, context);
+        } else {
+          return new ExtData_ts_1.ExtData(type, data);
+        }
+      }
+    };
+    exports.ExtensionCodec = ExtensionCodec;
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/utils/typedArrays.cjs
+var require_typedArrays = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/utils/typedArrays.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.ensureUint8Array = ensureUint8Array;
+    function isArrayBufferLike(buffer) {
+      return buffer instanceof ArrayBuffer || typeof SharedArrayBuffer !== "undefined" && buffer instanceof SharedArrayBuffer;
+    }
+    function ensureUint8Array(buffer) {
+      if (buffer instanceof Uint8Array) {
+        return buffer;
+      } else if (ArrayBuffer.isView(buffer)) {
+        return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+      } else if (isArrayBufferLike(buffer)) {
+        return new Uint8Array(buffer);
+      } else {
+        return Uint8Array.from(buffer);
+      }
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/Encoder.cjs
+var require_Encoder = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/Encoder.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.Encoder = exports.DEFAULT_INITIAL_BUFFER_SIZE = exports.DEFAULT_MAX_DEPTH = void 0;
+    var utf8_ts_1 = require_utf8();
+    var ExtensionCodec_ts_1 = require_ExtensionCodec();
+    var int_ts_1 = require_int();
+    var typedArrays_ts_1 = require_typedArrays();
+    exports.DEFAULT_MAX_DEPTH = 100;
+    exports.DEFAULT_INITIAL_BUFFER_SIZE = 2048;
+    var Encoder = class _Encoder {
+      extensionCodec;
+      context;
+      useBigInt64;
+      maxDepth;
+      initialBufferSize;
+      sortKeys;
+      forceFloat32;
+      ignoreUndefined;
+      forceIntegerToFloat;
+      pos;
+      view;
+      bytes;
+      entered = false;
+      constructor(options) {
+        this.extensionCodec = options?.extensionCodec ?? ExtensionCodec_ts_1.ExtensionCodec.defaultCodec;
+        this.context = options?.context;
+        this.useBigInt64 = options?.useBigInt64 ?? false;
+        this.maxDepth = options?.maxDepth ?? exports.DEFAULT_MAX_DEPTH;
+        this.initialBufferSize = options?.initialBufferSize ?? exports.DEFAULT_INITIAL_BUFFER_SIZE;
+        this.sortKeys = options?.sortKeys ?? false;
+        this.forceFloat32 = options?.forceFloat32 ?? false;
+        this.ignoreUndefined = options?.ignoreUndefined ?? false;
+        this.forceIntegerToFloat = options?.forceIntegerToFloat ?? false;
+        this.pos = 0;
+        this.view = new DataView(new ArrayBuffer(this.initialBufferSize));
+        this.bytes = new Uint8Array(this.view.buffer);
+      }
+      clone() {
+        return new _Encoder({
+          extensionCodec: this.extensionCodec,
+          context: this.context,
+          useBigInt64: this.useBigInt64,
+          maxDepth: this.maxDepth,
+          initialBufferSize: this.initialBufferSize,
+          sortKeys: this.sortKeys,
+          forceFloat32: this.forceFloat32,
+          ignoreUndefined: this.ignoreUndefined,
+          forceIntegerToFloat: this.forceIntegerToFloat
+        });
+      }
+      reinitializeState() {
+        this.pos = 0;
+      }
+      /**
+       * This is almost equivalent to {@link Encoder#encode}, but it returns an reference of the encoder's internal buffer and thus much faster than {@link Encoder#encode}.
+       *
+       * @returns Encodes the object and returns a shared reference the encoder's internal buffer.
+       */
+      encodeSharedRef(object) {
+        if (this.entered) {
+          const instance = this.clone();
+          return instance.encodeSharedRef(object);
+        }
+        try {
+          this.entered = true;
+          this.reinitializeState();
+          this.doEncode(object, 1);
+          return this.bytes.subarray(0, this.pos);
+        } finally {
+          this.entered = false;
+        }
+      }
+      /**
+       * @returns Encodes the object and returns a copy of the encoder's internal buffer.
+       */
+      encode(object) {
+        if (this.entered) {
+          const instance = this.clone();
+          return instance.encode(object);
+        }
+        try {
+          this.entered = true;
+          this.reinitializeState();
+          this.doEncode(object, 1);
+          return this.bytes.slice(0, this.pos);
+        } finally {
+          this.entered = false;
+        }
+      }
+      doEncode(object, depth) {
+        if (depth > this.maxDepth) {
+          throw new Error(`Too deep objects in depth ${depth}`);
+        }
+        if (object == null) {
+          this.encodeNil();
+        } else if (typeof object === "boolean") {
+          this.encodeBoolean(object);
+        } else if (typeof object === "number") {
+          if (!this.forceIntegerToFloat) {
+            this.encodeNumber(object);
+          } else {
+            this.encodeNumberAsFloat(object);
+          }
+        } else if (typeof object === "string") {
+          this.encodeString(object);
+        } else if (this.useBigInt64 && typeof object === "bigint") {
+          this.encodeBigInt64(object);
+        } else {
+          this.encodeObject(object, depth);
+        }
+      }
+      ensureBufferSizeToWrite(sizeToWrite) {
+        const requiredSize = this.pos + sizeToWrite;
+        if (this.view.byteLength < requiredSize) {
+          this.resizeBuffer(requiredSize * 2);
+        }
+      }
+      resizeBuffer(newSize) {
+        const newBuffer = new ArrayBuffer(newSize);
+        const newBytes = new Uint8Array(newBuffer);
+        const newView = new DataView(newBuffer);
+        newBytes.set(this.bytes);
+        this.view = newView;
+        this.bytes = newBytes;
+      }
+      encodeNil() {
+        this.writeU8(192);
+      }
+      encodeBoolean(object) {
+        if (object === false) {
+          this.writeU8(194);
+        } else {
+          this.writeU8(195);
+        }
+      }
+      encodeNumber(object) {
+        if (!this.forceIntegerToFloat && Number.isSafeInteger(object)) {
+          if (object >= 0) {
+            if (object < 128) {
+              this.writeU8(object);
+            } else if (object < 256) {
+              this.writeU8(204);
+              this.writeU8(object);
+            } else if (object < 65536) {
+              this.writeU8(205);
+              this.writeU16(object);
+            } else if (object < 4294967296) {
+              this.writeU8(206);
+              this.writeU32(object);
+            } else if (!this.useBigInt64) {
+              this.writeU8(207);
+              this.writeU64(object);
+            } else {
+              this.encodeNumberAsFloat(object);
+            }
+          } else {
+            if (object >= -32) {
+              this.writeU8(224 | object + 32);
+            } else if (object >= -128) {
+              this.writeU8(208);
+              this.writeI8(object);
+            } else if (object >= -32768) {
+              this.writeU8(209);
+              this.writeI16(object);
+            } else if (object >= -2147483648) {
+              this.writeU8(210);
+              this.writeI32(object);
+            } else if (!this.useBigInt64) {
+              this.writeU8(211);
+              this.writeI64(object);
+            } else {
+              this.encodeNumberAsFloat(object);
+            }
+          }
+        } else {
+          this.encodeNumberAsFloat(object);
+        }
+      }
+      encodeNumberAsFloat(object) {
+        if (this.forceFloat32) {
+          this.writeU8(202);
+          this.writeF32(object);
+        } else {
+          this.writeU8(203);
+          this.writeF64(object);
+        }
+      }
+      encodeBigInt64(object) {
+        if (object >= BigInt(0)) {
+          this.writeU8(207);
+          this.writeBigUint64(object);
+        } else {
+          this.writeU8(211);
+          this.writeBigInt64(object);
+        }
+      }
+      writeStringHeader(byteLength) {
+        if (byteLength < 32) {
+          this.writeU8(160 + byteLength);
+        } else if (byteLength < 256) {
+          this.writeU8(217);
+          this.writeU8(byteLength);
+        } else if (byteLength < 65536) {
+          this.writeU8(218);
+          this.writeU16(byteLength);
+        } else if (byteLength < 4294967296) {
+          this.writeU8(219);
+          this.writeU32(byteLength);
+        } else {
+          throw new Error(`Too long string: ${byteLength} bytes in UTF-8`);
+        }
+      }
+      encodeString(object) {
+        const maxHeaderSize = 1 + 4;
+        const byteLength = (0, utf8_ts_1.utf8Count)(object);
+        this.ensureBufferSizeToWrite(maxHeaderSize + byteLength);
+        this.writeStringHeader(byteLength);
+        (0, utf8_ts_1.utf8Encode)(object, this.bytes, this.pos);
+        this.pos += byteLength;
+      }
+      encodeObject(object, depth) {
+        const ext = this.extensionCodec.tryToEncode(object, this.context);
+        if (ext != null) {
+          this.encodeExtension(ext);
+        } else if (Array.isArray(object)) {
+          this.encodeArray(object, depth);
+        } else if (ArrayBuffer.isView(object)) {
+          this.encodeBinary(object);
+        } else if (typeof object === "object") {
+          this.encodeMap(object, depth);
+        } else {
+          throw new Error(`Unrecognized object: ${Object.prototype.toString.apply(object)}`);
+        }
+      }
+      encodeBinary(object) {
+        const size = object.byteLength;
+        if (size < 256) {
+          this.writeU8(196);
+          this.writeU8(size);
+        } else if (size < 65536) {
+          this.writeU8(197);
+          this.writeU16(size);
+        } else if (size < 4294967296) {
+          this.writeU8(198);
+          this.writeU32(size);
+        } else {
+          throw new Error(`Too large binary: ${size}`);
+        }
+        const bytes = (0, typedArrays_ts_1.ensureUint8Array)(object);
+        this.writeU8a(bytes);
+      }
+      encodeArray(object, depth) {
+        const size = object.length;
+        if (size < 16) {
+          this.writeU8(144 + size);
+        } else if (size < 65536) {
+          this.writeU8(220);
+          this.writeU16(size);
+        } else if (size < 4294967296) {
+          this.writeU8(221);
+          this.writeU32(size);
+        } else {
+          throw new Error(`Too large array: ${size}`);
+        }
+        for (const item of object) {
+          this.doEncode(item, depth + 1);
+        }
+      }
+      countWithoutUndefined(object, keys) {
+        let count = 0;
+        for (const key of keys) {
+          if (object[key] !== void 0) {
+            count++;
+          }
+        }
+        return count;
+      }
+      encodeMap(object, depth) {
+        const keys = Object.keys(object);
+        if (this.sortKeys) {
+          keys.sort();
+        }
+        const size = this.ignoreUndefined ? this.countWithoutUndefined(object, keys) : keys.length;
+        if (size < 16) {
+          this.writeU8(128 + size);
+        } else if (size < 65536) {
+          this.writeU8(222);
+          this.writeU16(size);
+        } else if (size < 4294967296) {
+          this.writeU8(223);
+          this.writeU32(size);
+        } else {
+          throw new Error(`Too large map object: ${size}`);
+        }
+        for (const key of keys) {
+          const value = object[key];
+          if (!(this.ignoreUndefined && value === void 0)) {
+            this.encodeString(key);
+            this.doEncode(value, depth + 1);
+          }
+        }
+      }
+      encodeExtension(ext) {
+        if (typeof ext.data === "function") {
+          const data = ext.data(this.pos + 6);
+          const size2 = data.length;
+          if (size2 >= 4294967296) {
+            throw new Error(`Too large extension object: ${size2}`);
+          }
+          this.writeU8(201);
+          this.writeU32(size2);
+          this.writeI8(ext.type);
+          this.writeU8a(data);
+          return;
+        }
+        const size = ext.data.length;
+        if (size === 1) {
+          this.writeU8(212);
+        } else if (size === 2) {
+          this.writeU8(213);
+        } else if (size === 4) {
+          this.writeU8(214);
+        } else if (size === 8) {
+          this.writeU8(215);
+        } else if (size === 16) {
+          this.writeU8(216);
+        } else if (size < 256) {
+          this.writeU8(199);
+          this.writeU8(size);
+        } else if (size < 65536) {
+          this.writeU8(200);
+          this.writeU16(size);
+        } else if (size < 4294967296) {
+          this.writeU8(201);
+          this.writeU32(size);
+        } else {
+          throw new Error(`Too large extension object: ${size}`);
+        }
+        this.writeI8(ext.type);
+        this.writeU8a(ext.data);
+      }
+      writeU8(value) {
+        this.ensureBufferSizeToWrite(1);
+        this.view.setUint8(this.pos, value);
+        this.pos++;
+      }
+      writeU8a(values) {
+        const size = values.length;
+        this.ensureBufferSizeToWrite(size);
+        this.bytes.set(values, this.pos);
+        this.pos += size;
+      }
+      writeI8(value) {
+        this.ensureBufferSizeToWrite(1);
+        this.view.setInt8(this.pos, value);
+        this.pos++;
+      }
+      writeU16(value) {
+        this.ensureBufferSizeToWrite(2);
+        this.view.setUint16(this.pos, value);
+        this.pos += 2;
+      }
+      writeI16(value) {
+        this.ensureBufferSizeToWrite(2);
+        this.view.setInt16(this.pos, value);
+        this.pos += 2;
+      }
+      writeU32(value) {
+        this.ensureBufferSizeToWrite(4);
+        this.view.setUint32(this.pos, value);
+        this.pos += 4;
+      }
+      writeI32(value) {
+        this.ensureBufferSizeToWrite(4);
+        this.view.setInt32(this.pos, value);
+        this.pos += 4;
+      }
+      writeF32(value) {
+        this.ensureBufferSizeToWrite(4);
+        this.view.setFloat32(this.pos, value);
+        this.pos += 4;
+      }
+      writeF64(value) {
+        this.ensureBufferSizeToWrite(8);
+        this.view.setFloat64(this.pos, value);
+        this.pos += 8;
+      }
+      writeU64(value) {
+        this.ensureBufferSizeToWrite(8);
+        (0, int_ts_1.setUint64)(this.view, this.pos, value);
+        this.pos += 8;
+      }
+      writeI64(value) {
+        this.ensureBufferSizeToWrite(8);
+        (0, int_ts_1.setInt64)(this.view, this.pos, value);
+        this.pos += 8;
+      }
+      writeBigUint64(value) {
+        this.ensureBufferSizeToWrite(8);
+        this.view.setBigUint64(this.pos, value);
+        this.pos += 8;
+      }
+      writeBigInt64(value) {
+        this.ensureBufferSizeToWrite(8);
+        this.view.setBigInt64(this.pos, value);
+        this.pos += 8;
+      }
+    };
+    exports.Encoder = Encoder;
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/encode.cjs
+var require_encode = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/encode.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.encode = encode2;
+    var Encoder_ts_1 = require_Encoder();
+    function encode2(value, options) {
+      const encoder = new Encoder_ts_1.Encoder(options);
+      return encoder.encodeSharedRef(value);
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/utils/prettyByte.cjs
+var require_prettyByte = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/utils/prettyByte.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.prettyByte = prettyByte;
+    function prettyByte(byte) {
+      return `${byte < 0 ? "-" : ""}0x${Math.abs(byte).toString(16).padStart(2, "0")}`;
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/CachedKeyDecoder.cjs
+var require_CachedKeyDecoder = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/CachedKeyDecoder.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.CachedKeyDecoder = void 0;
+    var utf8_ts_1 = require_utf8();
+    var DEFAULT_MAX_KEY_LENGTH = 16;
+    var DEFAULT_MAX_LENGTH_PER_KEY = 16;
+    var CachedKeyDecoder = class {
+      hit = 0;
+      miss = 0;
+      caches;
+      maxKeyLength;
+      maxLengthPerKey;
+      constructor(maxKeyLength = DEFAULT_MAX_KEY_LENGTH, maxLengthPerKey = DEFAULT_MAX_LENGTH_PER_KEY) {
+        this.maxKeyLength = maxKeyLength;
+        this.maxLengthPerKey = maxLengthPerKey;
+        this.caches = [];
+        for (let i = 0; i < this.maxKeyLength; i++) {
+          this.caches.push([]);
+        }
+      }
+      canBeCached(byteLength) {
+        return byteLength > 0 && byteLength <= this.maxKeyLength;
+      }
+      find(bytes, inputOffset, byteLength) {
+        const records = this.caches[byteLength - 1];
+        FIND_CHUNK: for (const record of records) {
+          const recordBytes = record.bytes;
+          for (let j2 = 0; j2 < byteLength; j2++) {
+            if (recordBytes[j2] !== bytes[inputOffset + j2]) {
+              continue FIND_CHUNK;
+            }
+          }
+          return record.str;
+        }
+        return null;
+      }
+      store(bytes, value) {
+        const records = this.caches[bytes.length - 1];
+        const record = { bytes, str: value };
+        if (records.length >= this.maxLengthPerKey) {
+          records[Math.random() * records.length | 0] = record;
+        } else {
+          records.push(record);
+        }
+      }
+      decode(bytes, inputOffset, byteLength) {
+        const cachedValue = this.find(bytes, inputOffset, byteLength);
+        if (cachedValue != null) {
+          this.hit++;
+          return cachedValue;
+        }
+        this.miss++;
+        const str = (0, utf8_ts_1.utf8DecodeJs)(bytes, inputOffset, byteLength);
+        const slicedCopyOfBytes = Uint8Array.prototype.slice.call(bytes, inputOffset, inputOffset + byteLength);
+        this.store(slicedCopyOfBytes, str);
+        return str;
+      }
+    };
+    exports.CachedKeyDecoder = CachedKeyDecoder;
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/Decoder.cjs
+var require_Decoder = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/Decoder.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.Decoder = void 0;
+    var prettyByte_ts_1 = require_prettyByte();
+    var ExtensionCodec_ts_1 = require_ExtensionCodec();
+    var int_ts_1 = require_int();
+    var utf8_ts_1 = require_utf8();
+    var typedArrays_ts_1 = require_typedArrays();
+    var CachedKeyDecoder_ts_1 = require_CachedKeyDecoder();
+    var DecodeError_ts_1 = require_DecodeError();
+    var STATE_ARRAY = "array";
+    var STATE_MAP_KEY = "map_key";
+    var STATE_MAP_VALUE = "map_value";
+    var mapKeyConverter = (key) => {
+      if (typeof key === "string" || typeof key === "number") {
+        return key;
+      }
+      throw new DecodeError_ts_1.DecodeError("The type of key must be string or number but " + typeof key);
+    };
+    var StackPool = class {
+      stack = [];
+      stackHeadPosition = -1;
+      get length() {
+        return this.stackHeadPosition + 1;
+      }
+      top() {
+        return this.stack[this.stackHeadPosition];
+      }
+      pushArrayState(size) {
+        const state = this.getUninitializedStateFromPool();
+        state.type = STATE_ARRAY;
+        state.position = 0;
+        state.size = size;
+        state.array = new Array(size);
+      }
+      pushMapState(size) {
+        const state = this.getUninitializedStateFromPool();
+        state.type = STATE_MAP_KEY;
+        state.readCount = 0;
+        state.size = size;
+        state.map = {};
+      }
+      getUninitializedStateFromPool() {
+        this.stackHeadPosition++;
+        if (this.stackHeadPosition === this.stack.length) {
+          const partialState = {
+            type: void 0,
+            size: 0,
+            array: void 0,
+            position: 0,
+            readCount: 0,
+            map: void 0,
+            key: null
+          };
+          this.stack.push(partialState);
+        }
+        return this.stack[this.stackHeadPosition];
+      }
+      release(state) {
+        const topStackState = this.stack[this.stackHeadPosition];
+        if (topStackState !== state) {
+          throw new Error("Invalid stack state. Released state is not on top of the stack.");
+        }
+        if (state.type === STATE_ARRAY) {
+          const partialState = state;
+          partialState.size = 0;
+          partialState.array = void 0;
+          partialState.position = 0;
+          partialState.type = void 0;
+        }
+        if (state.type === STATE_MAP_KEY || state.type === STATE_MAP_VALUE) {
+          const partialState = state;
+          partialState.size = 0;
+          partialState.map = void 0;
+          partialState.readCount = 0;
+          partialState.type = void 0;
+        }
+        this.stackHeadPosition--;
+      }
+      reset() {
+        this.stack.length = 0;
+        this.stackHeadPosition = -1;
+      }
+    };
+    var HEAD_BYTE_REQUIRED = -1;
+    var EMPTY_VIEW = new DataView(new ArrayBuffer(0));
+    var EMPTY_BYTES = new Uint8Array(EMPTY_VIEW.buffer);
+    try {
+      EMPTY_VIEW.getInt8(0);
+    } catch (e) {
+      if (!(e instanceof RangeError)) {
+        throw new Error("This module is not supported in the current JavaScript engine because DataView does not throw RangeError on out-of-bounds access");
+      }
+    }
+    var MORE_DATA = new RangeError("Insufficient data");
+    var sharedCachedKeyDecoder = new CachedKeyDecoder_ts_1.CachedKeyDecoder();
+    var Decoder = class _Decoder {
+      extensionCodec;
+      context;
+      useBigInt64;
+      rawStrings;
+      maxStrLength;
+      maxBinLength;
+      maxArrayLength;
+      maxMapLength;
+      maxExtLength;
+      keyDecoder;
+      mapKeyConverter;
+      totalPos = 0;
+      pos = 0;
+      view = EMPTY_VIEW;
+      bytes = EMPTY_BYTES;
+      headByte = HEAD_BYTE_REQUIRED;
+      stack = new StackPool();
+      entered = false;
+      constructor(options) {
+        this.extensionCodec = options?.extensionCodec ?? ExtensionCodec_ts_1.ExtensionCodec.defaultCodec;
+        this.context = options?.context;
+        this.useBigInt64 = options?.useBigInt64 ?? false;
+        this.rawStrings = options?.rawStrings ?? false;
+        this.maxStrLength = options?.maxStrLength ?? int_ts_1.UINT32_MAX;
+        this.maxBinLength = options?.maxBinLength ?? int_ts_1.UINT32_MAX;
+        this.maxArrayLength = options?.maxArrayLength ?? int_ts_1.UINT32_MAX;
+        this.maxMapLength = options?.maxMapLength ?? int_ts_1.UINT32_MAX;
+        this.maxExtLength = options?.maxExtLength ?? int_ts_1.UINT32_MAX;
+        this.keyDecoder = options?.keyDecoder !== void 0 ? options.keyDecoder : sharedCachedKeyDecoder;
+        this.mapKeyConverter = options?.mapKeyConverter ?? mapKeyConverter;
+      }
+      clone() {
+        return new _Decoder({
+          extensionCodec: this.extensionCodec,
+          context: this.context,
+          useBigInt64: this.useBigInt64,
+          rawStrings: this.rawStrings,
+          maxStrLength: this.maxStrLength,
+          maxBinLength: this.maxBinLength,
+          maxArrayLength: this.maxArrayLength,
+          maxMapLength: this.maxMapLength,
+          maxExtLength: this.maxExtLength,
+          keyDecoder: this.keyDecoder
+        });
+      }
+      reinitializeState() {
+        this.totalPos = 0;
+        this.headByte = HEAD_BYTE_REQUIRED;
+        this.stack.reset();
+      }
+      setBuffer(buffer) {
+        const bytes = (0, typedArrays_ts_1.ensureUint8Array)(buffer);
+        this.bytes = bytes;
+        this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        this.pos = 0;
+      }
+      appendBuffer(buffer) {
+        if (this.headByte === HEAD_BYTE_REQUIRED && !this.hasRemaining(1)) {
+          this.setBuffer(buffer);
+        } else {
+          const remainingData = this.bytes.subarray(this.pos);
+          const newData = (0, typedArrays_ts_1.ensureUint8Array)(buffer);
+          const newBuffer = new Uint8Array(remainingData.length + newData.length);
+          newBuffer.set(remainingData);
+          newBuffer.set(newData, remainingData.length);
+          this.setBuffer(newBuffer);
+        }
+      }
+      hasRemaining(size) {
+        return this.view.byteLength - this.pos >= size;
+      }
+      createExtraByteError(posToShow) {
+        const { view, pos } = this;
+        return new RangeError(`Extra ${view.byteLength - pos} of ${view.byteLength} byte(s) found at buffer[${posToShow}]`);
+      }
+      /**
+       * @throws {@link DecodeError}
+       * @throws {@link RangeError}
+       */
+      decode(buffer) {
+        if (this.entered) {
+          const instance = this.clone();
+          return instance.decode(buffer);
+        }
+        try {
+          this.entered = true;
+          this.reinitializeState();
+          this.setBuffer(buffer);
+          const object = this.doDecodeSync();
+          if (this.hasRemaining(1)) {
+            throw this.createExtraByteError(this.pos);
+          }
+          return object;
+        } finally {
+          this.entered = false;
+        }
+      }
+      *decodeMulti(buffer) {
+        if (this.entered) {
+          const instance = this.clone();
+          yield* instance.decodeMulti(buffer);
+          return;
+        }
+        try {
+          this.entered = true;
+          this.reinitializeState();
+          this.setBuffer(buffer);
+          while (this.hasRemaining(1)) {
+            yield this.doDecodeSync();
+          }
+        } finally {
+          this.entered = false;
+        }
+      }
+      async decodeAsync(stream) {
+        if (this.entered) {
+          const instance = this.clone();
+          return instance.decodeAsync(stream);
+        }
+        try {
+          this.entered = true;
+          let decoded = false;
+          let object;
+          for await (const buffer of stream) {
+            if (decoded) {
+              this.entered = false;
+              throw this.createExtraByteError(this.totalPos);
+            }
+            this.appendBuffer(buffer);
+            try {
+              object = this.doDecodeSync();
+              decoded = true;
+            } catch (e) {
+              if (!(e instanceof RangeError)) {
+                throw e;
+              }
+            }
+            this.totalPos += this.pos;
+          }
+          if (decoded) {
+            if (this.hasRemaining(1)) {
+              throw this.createExtraByteError(this.totalPos);
+            }
+            return object;
+          }
+          const { headByte, pos, totalPos } = this;
+          throw new RangeError(`Insufficient data in parsing ${(0, prettyByte_ts_1.prettyByte)(headByte)} at ${totalPos} (${pos} in the current buffer)`);
+        } finally {
+          this.entered = false;
+        }
+      }
+      decodeArrayStream(stream) {
+        return this.decodeMultiAsync(stream, true);
+      }
+      decodeStream(stream) {
+        return this.decodeMultiAsync(stream, false);
+      }
+      async *decodeMultiAsync(stream, isArray) {
+        if (this.entered) {
+          const instance = this.clone();
+          yield* instance.decodeMultiAsync(stream, isArray);
+          return;
+        }
+        try {
+          this.entered = true;
+          let isArrayHeaderRequired = isArray;
+          let arrayItemsLeft = -1;
+          for await (const buffer of stream) {
+            if (isArray && arrayItemsLeft === 0) {
+              throw this.createExtraByteError(this.totalPos);
+            }
+            this.appendBuffer(buffer);
+            if (isArrayHeaderRequired) {
+              arrayItemsLeft = this.readArraySize();
+              isArrayHeaderRequired = false;
+              this.complete();
+            }
+            try {
+              while (true) {
+                yield this.doDecodeSync();
+                if (--arrayItemsLeft === 0) {
+                  break;
+                }
+              }
+            } catch (e) {
+              if (!(e instanceof RangeError)) {
+                throw e;
+              }
+            }
+            this.totalPos += this.pos;
+          }
+        } finally {
+          this.entered = false;
+        }
+      }
+      doDecodeSync() {
+        DECODE: while (true) {
+          const headByte = this.readHeadByte();
+          let object;
+          if (headByte >= 224) {
+            object = headByte - 256;
+          } else if (headByte < 192) {
+            if (headByte < 128) {
+              object = headByte;
+            } else if (headByte < 144) {
+              const size = headByte - 128;
+              if (size !== 0) {
+                this.pushMapState(size);
+                this.complete();
+                continue DECODE;
+              } else {
+                object = {};
+              }
+            } else if (headByte < 160) {
+              const size = headByte - 144;
+              if (size !== 0) {
+                this.pushArrayState(size);
+                this.complete();
+                continue DECODE;
+              } else {
+                object = [];
+              }
+            } else {
+              const byteLength = headByte - 160;
+              object = this.decodeString(byteLength, 0);
+            }
+          } else if (headByte === 192) {
+            object = null;
+          } else if (headByte === 194) {
+            object = false;
+          } else if (headByte === 195) {
+            object = true;
+          } else if (headByte === 202) {
+            object = this.readF32();
+          } else if (headByte === 203) {
+            object = this.readF64();
+          } else if (headByte === 204) {
+            object = this.readU8();
+          } else if (headByte === 205) {
+            object = this.readU16();
+          } else if (headByte === 206) {
+            object = this.readU32();
+          } else if (headByte === 207) {
+            if (this.useBigInt64) {
+              object = this.readU64AsBigInt();
+            } else {
+              object = this.readU64();
+            }
+          } else if (headByte === 208) {
+            object = this.readI8();
+          } else if (headByte === 209) {
+            object = this.readI16();
+          } else if (headByte === 210) {
+            object = this.readI32();
+          } else if (headByte === 211) {
+            if (this.useBigInt64) {
+              object = this.readI64AsBigInt();
+            } else {
+              object = this.readI64();
+            }
+          } else if (headByte === 217) {
+            const byteLength = this.lookU8();
+            object = this.decodeString(byteLength, 1);
+          } else if (headByte === 218) {
+            const byteLength = this.lookU16();
+            object = this.decodeString(byteLength, 2);
+          } else if (headByte === 219) {
+            const byteLength = this.lookU32();
+            object = this.decodeString(byteLength, 4);
+          } else if (headByte === 220) {
+            const size = this.readU16();
+            if (size !== 0) {
+              this.pushArrayState(size);
+              this.complete();
+              continue DECODE;
+            } else {
+              object = [];
+            }
+          } else if (headByte === 221) {
+            const size = this.readU32();
+            if (size !== 0) {
+              this.pushArrayState(size);
+              this.complete();
+              continue DECODE;
+            } else {
+              object = [];
+            }
+          } else if (headByte === 222) {
+            const size = this.readU16();
+            if (size !== 0) {
+              this.pushMapState(size);
+              this.complete();
+              continue DECODE;
+            } else {
+              object = {};
+            }
+          } else if (headByte === 223) {
+            const size = this.readU32();
+            if (size !== 0) {
+              this.pushMapState(size);
+              this.complete();
+              continue DECODE;
+            } else {
+              object = {};
+            }
+          } else if (headByte === 196) {
+            const size = this.lookU8();
+            object = this.decodeBinary(size, 1);
+          } else if (headByte === 197) {
+            const size = this.lookU16();
+            object = this.decodeBinary(size, 2);
+          } else if (headByte === 198) {
+            const size = this.lookU32();
+            object = this.decodeBinary(size, 4);
+          } else if (headByte === 212) {
+            object = this.decodeExtension(1, 0);
+          } else if (headByte === 213) {
+            object = this.decodeExtension(2, 0);
+          } else if (headByte === 214) {
+            object = this.decodeExtension(4, 0);
+          } else if (headByte === 215) {
+            object = this.decodeExtension(8, 0);
+          } else if (headByte === 216) {
+            object = this.decodeExtension(16, 0);
+          } else if (headByte === 199) {
+            const size = this.lookU8();
+            object = this.decodeExtension(size, 1);
+          } else if (headByte === 200) {
+            const size = this.lookU16();
+            object = this.decodeExtension(size, 2);
+          } else if (headByte === 201) {
+            const size = this.lookU32();
+            object = this.decodeExtension(size, 4);
+          } else {
+            throw new DecodeError_ts_1.DecodeError(`Unrecognized type byte: ${(0, prettyByte_ts_1.prettyByte)(headByte)}`);
+          }
+          this.complete();
+          const stack = this.stack;
+          while (stack.length > 0) {
+            const state = stack.top();
+            if (state.type === STATE_ARRAY) {
+              state.array[state.position] = object;
+              state.position++;
+              if (state.position === state.size) {
+                object = state.array;
+                stack.release(state);
+              } else {
+                continue DECODE;
+              }
+            } else if (state.type === STATE_MAP_KEY) {
+              if (object === "__proto__") {
+                throw new DecodeError_ts_1.DecodeError("The key __proto__ is not allowed");
+              }
+              state.key = this.mapKeyConverter(object);
+              state.type = STATE_MAP_VALUE;
+              continue DECODE;
+            } else {
+              state.map[state.key] = object;
+              state.readCount++;
+              if (state.readCount === state.size) {
+                object = state.map;
+                stack.release(state);
+              } else {
+                state.key = null;
+                state.type = STATE_MAP_KEY;
+                continue DECODE;
+              }
+            }
+          }
+          return object;
+        }
+      }
+      readHeadByte() {
+        if (this.headByte === HEAD_BYTE_REQUIRED) {
+          this.headByte = this.readU8();
+        }
+        return this.headByte;
+      }
+      complete() {
+        this.headByte = HEAD_BYTE_REQUIRED;
+      }
+      readArraySize() {
+        const headByte = this.readHeadByte();
+        switch (headByte) {
+          case 220:
+            return this.readU16();
+          case 221:
+            return this.readU32();
+          default: {
+            if (headByte < 160) {
+              return headByte - 144;
+            } else {
+              throw new DecodeError_ts_1.DecodeError(`Unrecognized array type byte: ${(0, prettyByte_ts_1.prettyByte)(headByte)}`);
+            }
+          }
+        }
+      }
+      pushMapState(size) {
+        if (size > this.maxMapLength) {
+          throw new DecodeError_ts_1.DecodeError(`Max length exceeded: map length (${size}) > maxMapLengthLength (${this.maxMapLength})`);
+        }
+        this.stack.pushMapState(size);
+      }
+      pushArrayState(size) {
+        if (size > this.maxArrayLength) {
+          throw new DecodeError_ts_1.DecodeError(`Max length exceeded: array length (${size}) > maxArrayLength (${this.maxArrayLength})`);
+        }
+        this.stack.pushArrayState(size);
+      }
+      decodeString(byteLength, headerOffset) {
+        if (!this.rawStrings || this.stateIsMapKey()) {
+          return this.decodeUtf8String(byteLength, headerOffset);
+        }
+        return this.decodeBinary(byteLength, headerOffset);
+      }
+      /**
+       * @throws {@link RangeError}
+       */
+      decodeUtf8String(byteLength, headerOffset) {
+        if (byteLength > this.maxStrLength) {
+          throw new DecodeError_ts_1.DecodeError(`Max length exceeded: UTF-8 byte length (${byteLength}) > maxStrLength (${this.maxStrLength})`);
+        }
+        if (this.bytes.byteLength < this.pos + headerOffset + byteLength) {
+          throw MORE_DATA;
+        }
+        const offset = this.pos + headerOffset;
+        let object;
+        if (this.stateIsMapKey() && this.keyDecoder?.canBeCached(byteLength)) {
+          object = this.keyDecoder.decode(this.bytes, offset, byteLength);
+        } else {
+          object = (0, utf8_ts_1.utf8Decode)(this.bytes, offset, byteLength);
+        }
+        this.pos += headerOffset + byteLength;
+        return object;
+      }
+      stateIsMapKey() {
+        if (this.stack.length > 0) {
+          const state = this.stack.top();
+          return state.type === STATE_MAP_KEY;
+        }
+        return false;
+      }
+      /**
+       * @throws {@link RangeError}
+       */
+      decodeBinary(byteLength, headOffset) {
+        if (byteLength > this.maxBinLength) {
+          throw new DecodeError_ts_1.DecodeError(`Max length exceeded: bin length (${byteLength}) > maxBinLength (${this.maxBinLength})`);
+        }
+        if (!this.hasRemaining(byteLength + headOffset)) {
+          throw MORE_DATA;
+        }
+        const offset = this.pos + headOffset;
+        const object = this.bytes.subarray(offset, offset + byteLength);
+        this.pos += headOffset + byteLength;
+        return object;
+      }
+      decodeExtension(size, headOffset) {
+        if (size > this.maxExtLength) {
+          throw new DecodeError_ts_1.DecodeError(`Max length exceeded: ext length (${size}) > maxExtLength (${this.maxExtLength})`);
+        }
+        const extType = this.view.getInt8(this.pos + headOffset);
+        const data = this.decodeBinary(
+          size,
+          headOffset + 1
+          /* extType */
+        );
+        return this.extensionCodec.decode(data, extType, this.context);
+      }
+      lookU8() {
+        return this.view.getUint8(this.pos);
+      }
+      lookU16() {
+        return this.view.getUint16(this.pos);
+      }
+      lookU32() {
+        return this.view.getUint32(this.pos);
+      }
+      readU8() {
+        const value = this.view.getUint8(this.pos);
+        this.pos++;
+        return value;
+      }
+      readI8() {
+        const value = this.view.getInt8(this.pos);
+        this.pos++;
+        return value;
+      }
+      readU16() {
+        const value = this.view.getUint16(this.pos);
+        this.pos += 2;
+        return value;
+      }
+      readI16() {
+        const value = this.view.getInt16(this.pos);
+        this.pos += 2;
+        return value;
+      }
+      readU32() {
+        const value = this.view.getUint32(this.pos);
+        this.pos += 4;
+        return value;
+      }
+      readI32() {
+        const value = this.view.getInt32(this.pos);
+        this.pos += 4;
+        return value;
+      }
+      readU64() {
+        const value = (0, int_ts_1.getUint64)(this.view, this.pos);
+        this.pos += 8;
+        return value;
+      }
+      readI64() {
+        const value = (0, int_ts_1.getInt64)(this.view, this.pos);
+        this.pos += 8;
+        return value;
+      }
+      readU64AsBigInt() {
+        const value = this.view.getBigUint64(this.pos);
+        this.pos += 8;
+        return value;
+      }
+      readI64AsBigInt() {
+        const value = this.view.getBigInt64(this.pos);
+        this.pos += 8;
+        return value;
+      }
+      readF32() {
+        const value = this.view.getFloat32(this.pos);
+        this.pos += 4;
+        return value;
+      }
+      readF64() {
+        const value = this.view.getFloat64(this.pos);
+        this.pos += 8;
+        return value;
+      }
+    };
+    exports.Decoder = Decoder;
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/decode.cjs
+var require_decode = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/decode.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.decode = decode;
+    exports.decodeMulti = decodeMulti;
+    var Decoder_ts_1 = require_Decoder();
+    function decode(buffer, options) {
+      const decoder = new Decoder_ts_1.Decoder(options);
+      return decoder.decode(buffer);
+    }
+    function decodeMulti(buffer, options) {
+      const decoder = new Decoder_ts_1.Decoder(options);
+      return decoder.decodeMulti(buffer);
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/utils/stream.cjs
+var require_stream = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/utils/stream.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.isAsyncIterable = isAsyncIterable;
+    exports.asyncIterableFromStream = asyncIterableFromStream;
+    exports.ensureAsyncIterable = ensureAsyncIterable;
+    function isAsyncIterable(object) {
+      return object[Symbol.asyncIterator] != null;
+    }
+    async function* asyncIterableFromStream(stream) {
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            return;
+          }
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    function ensureAsyncIterable(streamLike) {
+      if (isAsyncIterable(streamLike)) {
+        return streamLike;
+      } else {
+        return asyncIterableFromStream(streamLike);
+      }
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/decodeAsync.cjs
+var require_decodeAsync = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/decodeAsync.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.decodeAsync = decodeAsync;
+    exports.decodeArrayStream = decodeArrayStream;
+    exports.decodeMultiStream = decodeMultiStream2;
+    var Decoder_ts_1 = require_Decoder();
+    var stream_ts_1 = require_stream();
+    async function decodeAsync(streamLike, options) {
+      const stream = (0, stream_ts_1.ensureAsyncIterable)(streamLike);
+      const decoder = new Decoder_ts_1.Decoder(options);
+      return decoder.decodeAsync(stream);
+    }
+    function decodeArrayStream(streamLike, options) {
+      const stream = (0, stream_ts_1.ensureAsyncIterable)(streamLike);
+      const decoder = new Decoder_ts_1.Decoder(options);
+      return decoder.decodeArrayStream(stream);
+    }
+    function decodeMultiStream2(streamLike, options) {
+      const stream = (0, stream_ts_1.ensureAsyncIterable)(streamLike);
+      const decoder = new Decoder_ts_1.Decoder(options);
+      return decoder.decodeStream(stream);
+    }
+  }
+});
+
+// node_modules/@msgpack/msgpack/dist.cjs/index.cjs
+var require_dist = __commonJS({
+  "node_modules/@msgpack/msgpack/dist.cjs/index.cjs"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.decodeTimestampExtension = exports.encodeTimestampExtension = exports.decodeTimestampToTimeSpec = exports.encodeTimeSpecToTimestamp = exports.encodeDateToTimeSpec = exports.EXT_TIMESTAMP = exports.ExtData = exports.ExtensionCodec = exports.Encoder = exports.DecodeError = exports.Decoder = exports.decodeMultiStream = exports.decodeArrayStream = exports.decodeAsync = exports.decodeMulti = exports.decode = exports.encode = void 0;
+    var encode_ts_1 = require_encode();
+    Object.defineProperty(exports, "encode", { enumerable: true, get: function() {
+      return encode_ts_1.encode;
+    } });
+    var decode_ts_1 = require_decode();
+    Object.defineProperty(exports, "decode", { enumerable: true, get: function() {
+      return decode_ts_1.decode;
+    } });
+    Object.defineProperty(exports, "decodeMulti", { enumerable: true, get: function() {
+      return decode_ts_1.decodeMulti;
+    } });
+    var decodeAsync_ts_1 = require_decodeAsync();
+    Object.defineProperty(exports, "decodeAsync", { enumerable: true, get: function() {
+      return decodeAsync_ts_1.decodeAsync;
+    } });
+    Object.defineProperty(exports, "decodeArrayStream", { enumerable: true, get: function() {
+      return decodeAsync_ts_1.decodeArrayStream;
+    } });
+    Object.defineProperty(exports, "decodeMultiStream", { enumerable: true, get: function() {
+      return decodeAsync_ts_1.decodeMultiStream;
+    } });
+    var Decoder_ts_1 = require_Decoder();
+    Object.defineProperty(exports, "Decoder", { enumerable: true, get: function() {
+      return Decoder_ts_1.Decoder;
+    } });
+    var DecodeError_ts_1 = require_DecodeError();
+    Object.defineProperty(exports, "DecodeError", { enumerable: true, get: function() {
+      return DecodeError_ts_1.DecodeError;
+    } });
+    var Encoder_ts_1 = require_Encoder();
+    Object.defineProperty(exports, "Encoder", { enumerable: true, get: function() {
+      return Encoder_ts_1.Encoder;
+    } });
+    var ExtensionCodec_ts_1 = require_ExtensionCodec();
+    Object.defineProperty(exports, "ExtensionCodec", { enumerable: true, get: function() {
+      return ExtensionCodec_ts_1.ExtensionCodec;
+    } });
+    var ExtData_ts_1 = require_ExtData();
+    Object.defineProperty(exports, "ExtData", { enumerable: true, get: function() {
+      return ExtData_ts_1.ExtData;
+    } });
+    var timestamp_ts_1 = require_timestamp();
+    Object.defineProperty(exports, "EXT_TIMESTAMP", { enumerable: true, get: function() {
+      return timestamp_ts_1.EXT_TIMESTAMP;
+    } });
+    Object.defineProperty(exports, "encodeDateToTimeSpec", { enumerable: true, get: function() {
+      return timestamp_ts_1.encodeDateToTimeSpec;
+    } });
+    Object.defineProperty(exports, "encodeTimeSpecToTimestamp", { enumerable: true, get: function() {
+      return timestamp_ts_1.encodeTimeSpecToTimestamp;
+    } });
+    Object.defineProperty(exports, "decodeTimestampToTimeSpec", { enumerable: true, get: function() {
+      return timestamp_ts_1.decodeTimestampToTimeSpec;
+    } });
+    Object.defineProperty(exports, "encodeTimestampExtension", { enumerable: true, get: function() {
+      return timestamp_ts_1.encodeTimestampExtension;
+    } });
+    Object.defineProperty(exports, "decodeTimestampExtension", { enumerable: true, get: function() {
+      return timestamp_ts_1.decodeTimestampExtension;
+    } });
+  }
+});
+
 // src/index.ts
 import { Key, isKeyRelease as isKeyRelease2, matchesKey as matchesKey3 } from "@earendil-works/pi-tui";
 
@@ -1815,10 +3554,10 @@ async function mediaDiagnostics() {
 // src/viewer.ts
 import { unwatchFile, watchFile } from "node:fs";
 import { stat as stat2 } from "node:fs/promises";
-import { dirname as dirname2 } from "node:path";
+import { dirname as dirname3 } from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
 import { getLanguageFromPath, getMarkdownTheme, highlightCode } from "@earendil-works/pi-coding-agent";
-import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Input, Markdown, isKeyRelease, matchesKey, parseKey as parseKey2, sliceByColumn, truncateToWidth, visibleWidth as visibleWidth2, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // src/host.ts
 import { randomInt } from "node:crypto";
@@ -2158,6 +3897,771 @@ function attachMouse(tui, onWheel) {
   };
 }
 
+// src/nvim.ts
+var import_msgpack = __toESM(require_dist(), 1);
+import { spawn as spawn2 } from "node:child_process";
+import { dirname as dirname2, resolve as resolvePath2 } from "node:path";
+import { getCapabilities as getCapabilities2, parseKey } from "@earendil-works/pi-tui";
+
+// src/nvim-grid.ts
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
+var RESET = "\x1B[0m";
+var NvimGrid = class {
+  constructor(trueColor) {
+    this.trueColor = trueColor;
+  }
+  trueColor;
+  width = 0;
+  height = 0;
+  cursor;
+  busy = false;
+  attrs = /* @__PURE__ */ new Map();
+  rows = [];
+  sgrCache = /* @__PURE__ */ new Map();
+  /**
+   * Apply one UI event tuple from a redraw batch. Unknown events and
+   * parameters appended by future Neovim versions are ignored by contract.
+   */
+  handle(name, params) {
+    switch (name) {
+      case "grid_resize": {
+        const [width, height] = numbers(params, 1, 2);
+        this.width = width;
+        this.height = height;
+        this.rows = blankRows(height, width);
+        this.cursor = void 0;
+        this.sgrCache.clear();
+        break;
+      }
+      case "grid_clear":
+        this.rows = blankRows(this.height, this.width);
+        break;
+      case "grid_destroy":
+        this.rows = [];
+        this.cursor = void 0;
+        break;
+      case "grid_cursor_goto": {
+        const [row, col] = numbers(params, 1, 2);
+        this.cursor = { row, col };
+        break;
+      }
+      case "grid_line": {
+        const row = params[1], colStart = params[2], cells = params[3];
+        if (typeof row === "number" && typeof colStart === "number" && Array.isArray(cells)) {
+          this.applyLine(row, colStart, cells);
+        }
+        break;
+      }
+      case "grid_scroll": {
+        const [top, bottom, left, right, count] = numbers(params, 1, 2, 3, 4, 5);
+        this.applyScroll(top, bottom, left, right, count);
+        break;
+      }
+      case "hl_attr_define": {
+        const id = params[0];
+        if (typeof id !== "number") break;
+        this.attrs.set(id, parseAttr(params[1], params[2]));
+        this.sgrCache.delete(id);
+        break;
+      }
+      // default_colors_set is deliberately ignored: the embedded editor keeps
+      // the terminal's own default colors, matching the preview around it.
+      default:
+        break;
+    }
+  }
+  applyLine(row, colStart, cells) {
+    if (row < 0 || row >= this.rows.length || colStart < 0 || colStart >= this.width) return;
+    const line = this.rows[row];
+    let col = colStart;
+    let attr = 0;
+    for (const entry of cells) {
+      if (!Array.isArray(entry)) continue;
+      const [text, hlId, repeat] = entry;
+      if (typeof hlId === "number") attr = hlId;
+      const times = typeof repeat === "number" && repeat > 0 ? repeat : 1;
+      for (let i = 0; i < times && col < this.width; i++) {
+        line[col++] = { text, attr };
+      }
+    }
+  }
+  applyScroll(top, bottom, left, right, count) {
+    if (count === 0 || this.rows.length === 0) return;
+    const topRow = clamp(top, 0, this.rows.length);
+    const bottomRow = clamp(bottom, topRow, this.rows.length);
+    const leftCol = clamp(left, 0, this.width);
+    const rightCol = clamp(right, leftCol, this.width);
+    const region = bottomRow - topRow;
+    const shift = Math.min(Math.abs(count), region);
+    const blank = () => blankRow(rightCol - leftCol);
+    if (count > 0) {
+      for (let row = topRow; row < bottomRow; row++) {
+        const source = row + shift;
+        this.rows[row].splice(
+          leftCol,
+          rightCol - leftCol,
+          ...source < bottomRow ? this.rows[source].slice(leftCol, rightCol) : blank()
+        );
+      }
+    } else {
+      for (let row = bottomRow - 1; row >= topRow; row--) {
+        const source = row - shift;
+        this.rows[row].splice(
+          leftCol,
+          rightCol - leftCol,
+          ...source >= topRow ? this.rows[source].slice(leftCol, rightCol) : blank()
+        );
+      }
+    }
+  }
+  /** Committed ANSI lines, one per grid row, with cursor marker when focused. */
+  render(focused) {
+    const lines = [];
+    for (let row = 0; row < this.rows.length; row++) lines.push(this.renderRow(row, focused));
+    return lines;
+  }
+  renderRow(row, focused) {
+    const cells = this.rows[row] ?? [];
+    const cursor = focused && !this.busy ? this.cursor : void 0;
+    let out = "";
+    let open2 = "";
+    let markerAt = -1;
+    let column = 0;
+    for (const cell of cells) {
+      if (cursor?.row === row && markerAt < 0 && column + visibleWidth(cell.text) > cursor.col) markerAt = out.length;
+      const sgr = this.sgrFor(cell.attr);
+      if (sgr !== open2) {
+        out += sgr === "" ? open2 === "" ? "" : RESET : RESET + sgr;
+        open2 = sgr;
+      }
+      out += cell.text;
+      column += visibleWidth(cell.text);
+    }
+    if (open2 !== "") out += RESET;
+    if (cursor?.row === row && markerAt < 0) markerAt = out.length;
+    if (markerAt >= 0) out = out.slice(0, markerAt) + CURSOR_MARKER + out.slice(markerAt);
+    return out;
+  }
+  sgrFor(attrId) {
+    if (attrId === 0) return "";
+    const cached = this.sgrCache.get(attrId);
+    if (cached !== void 0) return cached;
+    const attr = this.attrs.get(attrId);
+    let sgr = "";
+    if (attr) {
+      const parts = [];
+      if (attr.bold) parts.push("1");
+      if (attr.dim) parts.push("2");
+      if (attr.italic) parts.push("3");
+      if (attr.underline) parts.push("4");
+      if (attr.strikethrough) parts.push("9");
+      let foreground = attr.foreground;
+      let background = attr.background;
+      let ctermForeground = attr.ctermForeground;
+      let ctermBackground = attr.ctermBackground;
+      if (attr.reverse && foreground !== void 0 && background !== void 0) {
+        [foreground, background] = [background, foreground];
+        [ctermForeground, ctermBackground] = [ctermBackground, ctermForeground];
+      } else if (attr.reverse) {
+        parts.push("7");
+      }
+      const fg = this.colorSgr(foreground, ctermForeground, true);
+      const bg = this.colorSgr(background, ctermBackground, false);
+      if (fg) parts.push(fg);
+      if (bg) parts.push(bg);
+      if (parts.length) sgr = `\x1B[${parts.join(";")}m`;
+    }
+    this.sgrCache.set(attrId, sgr);
+    return sgr;
+  }
+  // rgb_attr on truecolor terminals; the protocol's own cterm palette index
+  // otherwise. When the preferred form is absent, the other one still applies.
+  colorSgr(rgb, cterm, foreground) {
+    const code = foreground ? 38 : 48;
+    if (this.trueColor || cterm === void 0) {
+      if (rgb === void 0) return "";
+      return `${code};2;${rgb >> 16 & 255};${rgb >> 8 & 255};${rgb & 255}`;
+    }
+    return `${code};5;${cterm}`;
+  }
+};
+function parseAttr(rgbAttr, ctermAttr) {
+  const attr = {};
+  if (typeof rgbAttr?.foreground === "number") attr.foreground = rgbAttr.foreground;
+  if (typeof rgbAttr?.background === "number") attr.background = rgbAttr.background;
+  if (typeof ctermAttr?.foreground === "number") attr.ctermForeground = ctermAttr.foreground;
+  if (typeof ctermAttr?.background === "number") attr.ctermBackground = ctermAttr.background;
+  for (const key of ["bold", "dim", "italic", "reverse", "strikethrough"]) {
+    if (rgbAttr?.[key] === true) attr[key] = true;
+  }
+  if (rgbAttr?.underline === true || rgbAttr?.undercurl === true || rgbAttr?.underdouble === true || rgbAttr?.underdotted === true || rgbAttr?.underdashed === true) attr.underline = true;
+  return attr;
+}
+function numbers(params, ...indexes) {
+  return indexes.map((index) => typeof params[index] === "number" ? params[index] : 0);
+}
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+function blankRow(width) {
+  return Array.from({ length: Math.max(0, width) }, () => ({ text: " ", attr: 0 }));
+}
+function blankRows(height, width) {
+  return Array.from({ length: Math.max(0, height) }, () => blankRow(width));
+}
+
+// src/nvim.ts
+var MINIMUM_VERSION = 0 * 1e4 + 9 * 100 + 0;
+var PASTE_START = "\x1B[200~";
+var PASTE_END = "\x1B[201~";
+var MOUSE_PACKET = /^\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[MIDO]/;
+var NOTATION_BY_KEY = {
+  escape: "Esc",
+  enter: "CR",
+  return: "CR",
+  tab: "Tab",
+  backspace: "BS",
+  delete: "Del",
+  insert: "Insert",
+  home: "Home",
+  end: "End",
+  pageUp: "PageUp",
+  pageDown: "PageDown",
+  up: "Up",
+  down: "Down",
+  left: "Left",
+  right: "Right",
+  clear: "Clear",
+  f1: "F1",
+  f2: "F2",
+  f3: "F3",
+  f4: "F4",
+  f5: "F5",
+  f6: "F6",
+  f7: "F7",
+  f8: "F8",
+  f9: "F9",
+  f10: "F10",
+  f11: "F11",
+  f12: "F12"
+};
+var NOTATION_BY_MODIFIER = { ctrl: "C", alt: "M", meta: "M", super: "D", shift: "S" };
+var LUA_SETUP = [
+  "vim.o.modeline = false",
+  "vim.o.loadplugins = false",
+  'vim.o.shadafile = "NONE"',
+  "vim.o.undofile = false",
+  "local runtime = vim.env.VIMRUNTIME; if runtime and #runtime > 0 then vim.opt.runtimepath = { runtime } end",
+  'vim.cmd("filetype plugin indent on")',
+  'vim.cmd("syntax on")'
+].join("; ");
+var REGISTER_LUA = `local channel = ...
+local function report()
+  local dirty = false
+  for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.bo[buffer].modified and vim.bo[buffer].buftype == "" and vim.bo[buffer].buflisted then
+      dirty = true
+      break
+    end
+  end
+  vim.rpcnotify(channel, "pi_view_dirty", dirty)
+end
+vim.api.nvim_create_autocmd(
+  { "TextChanged", "TextChangedI", "TextChangedP", "TextChangedT", "BufModifiedSet", "BufWritePre", "BufWritePost", "BufNew", "BufReadPost" },
+  { callback = report })
+report()
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function() vim.rpcnotify(channel, "pi_view_exit") end,
+})`;
+var NvimEditor = class {
+  constructor(path3, options, spawnChild = spawn2) {
+    this.path = path3;
+    this.options = options;
+    this.spawnChild = spawnChild;
+    this.path = resolvePath2(path3);
+    this.desired = { cols: Math.max(4, options.cols), rows: Math.max(2, options.rows) };
+    this.grid = new NvimGrid(getCapabilities2().trueColor);
+  }
+  path;
+  options;
+  spawnChild;
+  grid;
+  pending = /* @__PURE__ */ new Map();
+  child;
+  nextId = 1;
+  stderrTail = "";
+  readyTimer;
+  pasteTimer;
+  killTimer;
+  pasteBuffer;
+  inputQueue = [];
+  pumping = false;
+  desired;
+  sent = { cols: 0, rows: 0 };
+  drawing = false;
+  mode = "";
+  _dirty = false;
+  userExit = false;
+  finished = false;
+  launched = false;
+  get dirty() {
+    return this._dirty;
+  }
+  get running() {
+    return !this.finished;
+  }
+  // True once Neovim started drawing: input is live and the grid renders,
+  // including native startup prompts such as swap recovery.
+  get ready() {
+    return this.drawing && !this.finished;
+  }
+  /** Launch Neovim and attach. Failures surface via onError; never throws. */
+  start() {
+    if (this.launched || this.finished) return;
+    this.launched = true;
+    try {
+      const child = this.spawnChild(
+        "nvim",
+        ["--embed", "-u", "NONE", "-i", "NONE", "--noplugin", "--cmd", `lua ${LUA_SETUP}`, "--", this.path],
+        { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, cwd: dirname2(this.path) }
+      );
+      this.child = child;
+      child.stdin?.on("error", () => {
+      });
+      child.stderr?.on("error", () => {
+      });
+      this.readStream(child.stdout);
+      child.stderr?.on("data", (chunk) => this.rememberStderr(chunk));
+      child.on("error", (error) => {
+        this.fail(error.code === "ENOENT" ? "Neovim is not installed or not on PATH; install nvim (>= 0.9) to edit previews" : `Could not launch Neovim: ${safeText(error.message)}`);
+      });
+      child.on("close", (code, signal) => this.onSessionEnd(code, signal));
+      this.readyTimer = setTimeout(() => this.fail("Neovim did not start drawing within 10 seconds"), 1e4);
+      this.readyTimer.unref();
+      void this.handshake().catch((error) => this.fail(error instanceof Error ? error.message : String(error)));
+    } catch (error) {
+      this.fail(error instanceof Error ? error.message : String(error));
+    }
+  }
+  async handshake() {
+    const info = await this.request("nvim_get_api_info", []);
+    this.checkVersion(info);
+    const channel = Array.isArray(info) && typeof info[0] === "number" ? info[0] : void 0;
+    if (channel === void 0 || !Number.isSafeInteger(channel) || channel < 1) throw new Error("Neovim did not report a usable RPC channel");
+    await this.request("nvim_exec_lua", [REGISTER_LUA, [channel]]);
+    await this.attach();
+  }
+  input(data) {
+    if (this.finished || !data) return;
+    if (this.pasteBuffer !== void 0) {
+      this.pasteBuffer += data;
+      this.settlePaste();
+      return;
+    }
+    const start = data.indexOf(PASTE_START);
+    if (start < 0) {
+      this.enqueue(translateKeys(data));
+      return;
+    }
+    const before = data.slice(0, start);
+    if (before) this.enqueue(translateKeys(before));
+    this.pasteBuffer = data.slice(start + PASTE_START.length);
+    this.settlePaste();
+  }
+  wheel(delta) {
+    if (this.finished || !delta) return;
+    const notches = Math.min(3, Math.max(1, Math.round(Math.abs(delta) / 3)));
+    this.enqueue((delta > 0 ? "<ScrollWheelDown>" : "<ScrollWheelUp>").repeat(notches));
+  }
+  resize(cols, rows) {
+    const next = { cols: Math.max(4, cols), rows: Math.max(2, rows) };
+    if (next.cols === this.desired.cols && next.rows === this.desired.rows) return;
+    this.desired = next;
+    this.applyResize();
+  }
+  render(focused) {
+    const rows = this.drawing && !this.finished ? this.grid.render(focused) : [];
+    return { rows, mode: this.mode };
+  }
+  dispose() {
+    if (this.finished) return;
+    const child = this.child;
+    if (!child) {
+      this.finishLocally();
+      return;
+    }
+    this.flushQueueTo(child);
+    if (this._dirty) {
+      void this.request("nvim_command", ["silent! preserve"]).catch(() => {
+      });
+      this.finishLocally();
+      this.killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+        }
+        this.killTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+          }
+        }, 250);
+        this.killTimer.unref();
+      }, 150);
+      this.killTimer.unref();
+    } else {
+      this.finishLocally();
+      try {
+        child.kill("SIGTERM");
+      } catch {
+      }
+      this.killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+      }, 300);
+      this.killTimer.unref();
+    }
+    child.once("exit", () => clearTimeout(this.killTimer));
+  }
+  /** Close out client state once the child-facing teardown is arranged. */
+  finishLocally() {
+    if (this.finished) return;
+    this.finished = true;
+    this.clearTimers();
+    this.rejectAll(new Error("Neovim session closed"));
+    this.pasteBuffer = void 0;
+  }
+  flushQueueTo(child) {
+    const items = this.inputQueue;
+    this.inputQueue = [];
+    for (const item of items) {
+      const params = item.kind === "paste" ? [item.text, true, -1] : [item.bytes.toString("utf8")];
+      try {
+        child.stdin?.write((0, import_msgpack.encode)([0, this.nextId++, item.kind === "paste" ? "nvim_paste" : "nvim_input", params]));
+      } catch {
+      }
+    }
+  }
+  /** Consume the msgpack-rpc stream through the maintained codec. */
+  readStream(stdout) {
+    void (async () => {
+      try {
+        const chunks = async function* (stream) {
+          for await (const chunk of stream) yield chunk;
+        };
+        for await (const message of (0, import_msgpack.decodeMultiStream)(chunks(stdout))) {
+          this.dispatch(message);
+        }
+      } catch (error) {
+        if (error instanceof import_msgpack.DecodeError && !this.finished) {
+          this.fail(`Neovim sent an invalid RPC stream: ${safeText(error.message)}`);
+        }
+      }
+    })();
+  }
+  dispatch(message) {
+    if (!Array.isArray(message) || message.length === 0) return;
+    switch (message[0]) {
+      case 1: {
+        const id = message[1];
+        const waiter = typeof id === "number" ? this.pending.get(id) : void 0;
+        if (waiter) {
+          this.pending.delete(id);
+          if (message[2] !== null && message[2] !== void 0) waiter.reject(new Error(describe(message[2])));
+          else waiter.resolve(message[3]);
+        }
+        return;
+      }
+      case 2: {
+        const [method, params] = [message[1], message[2]];
+        if (method === "redraw" && Array.isArray(params)) {
+          this.markDrawing();
+          this.handleRedraw(params);
+        } else if (method === "pi_view_dirty") this.setDirty(params?.[0] === true);
+        else if (method === "pi_view_exit") this.userExit = true;
+        return;
+      }
+      default:
+        return;
+    }
+  }
+  handleRedraw(groups) {
+    for (const group of groups) {
+      if (!Array.isArray(group) || typeof group[0] !== "string") continue;
+      const name = group[0];
+      const tuples = group.slice(1);
+      if (name === "flush") {
+        this.options.onFlush();
+        continue;
+      }
+      if (name === "mode_change") {
+        const mode = Array.isArray(tuples[0]) ? tuples[0][0] : void 0;
+        if (typeof mode === "string" && mode !== this.mode) {
+          this.mode = mode;
+          this.options.onFlush();
+        }
+        continue;
+      }
+      if (name === "busy_start") {
+        this.grid.busy = true;
+        continue;
+      }
+      if (name === "busy_stop") {
+        this.grid.busy = false;
+        this.options.onFlush();
+        continue;
+      }
+      for (const tuple of tuples) {
+        if (Array.isArray(tuple)) this.grid.handle(name, tuple);
+      }
+    }
+  }
+  request(method, params) {
+    const child = this.child;
+    if (this.finished || !child) return Promise.reject(new Error("Neovim session closed"));
+    const id = this.nextId++;
+    const { promise, resolve: resolve4, reject } = Promise.withResolvers();
+    this.pending.set(id, { resolve: resolve4, reject });
+    const frame = (0, import_msgpack.encode)([0, id, method, params]);
+    child.stdin?.write(frame, (error) => {
+      if (error) {
+        this.pending.delete(id);
+        reject(new Error(`Could not write to Neovim: ${safeText(error.message)}`));
+      }
+    });
+    return promise;
+  }
+  rejectAll(error) {
+    for (const waiter of this.pending.values()) waiter.reject(error);
+    this.pending.clear();
+  }
+  setDirty(dirty) {
+    if (dirty === this._dirty) return;
+    this._dirty = dirty;
+    this.options.onDirty?.(dirty);
+  }
+  /** Queue notation or paste text; one FIFO keeps Neovim's input ordered. */
+  enqueue(notation) {
+    if (!notation) return;
+    this.inputQueue.push({ kind: "keys", bytes: Buffer.from(notation, "utf8") });
+    void this.pumpInput();
+  }
+  /** nvim_input may accept fewer bytes than queued; pump until drained. */
+  async pumpInput() {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.inputQueue.length > 0) {
+        if (this.finished) {
+          this.inputQueue.length = 0;
+          return;
+        }
+        if (!this.child) {
+          await delay(10);
+          continue;
+        }
+        const item = this.inputQueue[0];
+        if (item.kind === "paste") {
+          this.inputQueue.shift();
+          if (item.text) await this.request("nvim_paste", [item.text, true, -1]).catch(() => {
+          });
+          continue;
+        }
+        let written;
+        try {
+          written = await this.request("nvim_input", [item.bytes.toString("utf8")]);
+        } catch {
+          this.inputQueue.length = 0;
+          return;
+        }
+        const consumed = typeof written === "number" ? written : item.bytes.length;
+        if (consumed >= item.bytes.length) {
+          this.inputQueue.shift();
+        } else if (consumed > 0) {
+          this.inputQueue[0] = { kind: "keys", bytes: item.bytes.subarray(consumed) };
+        } else {
+          await delay(5);
+        }
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+  /** Complete a bracketed paste at the end marker; flush stuck pastes late. */
+  settlePaste() {
+    const end = this.pasteBuffer?.indexOf(PASTE_END) ?? -1;
+    if (end < 0) {
+      this.pasteTimer ??= setTimeout(() => {
+        const stuck = this.pasteBuffer;
+        this.pasteBuffer = void 0;
+        this.pasteTimer = void 0;
+        if (stuck) {
+          this.inputQueue.push({ kind: "paste", text: stuck });
+          void this.pumpInput();
+        }
+      }, 3e3);
+      this.pasteTimer.unref();
+      return;
+    }
+    const payload = this.pasteBuffer.slice(0, end);
+    const tail = this.pasteBuffer.slice(end + PASTE_END.length);
+    this.pasteBuffer = void 0;
+    clearTimeout(this.pasteTimer);
+    this.pasteTimer = void 0;
+    if (payload) {
+      this.inputQueue.push({ kind: "paste", text: payload });
+      void this.pumpInput();
+    }
+    if (tail) this.enqueue(translateKeys(tail));
+  }
+  applyResize() {
+    if (!this.drawing || this.finished) return;
+    if (this.desired.cols === this.sent.cols && this.desired.rows === this.sent.rows) return;
+    const { cols, rows } = this.desired;
+    void this.request("nvim_ui_try_resize", [cols, rows]).then(() => {
+      this.sent = { cols, rows };
+    }).catch(() => {
+    });
+  }
+  async attach() {
+    const { cols, rows } = this.desired;
+    await this.request("nvim_ui_attach", [cols, rows, { rgb: true, ext_linegrid: true }]);
+    this.sent = { cols, rows };
+  }
+  checkVersion(info) {
+    const metadata = Array.isArray(info) ? info[1] : void 0;
+    const version = metadata?.version;
+    const major = version?.major, minor = version?.minor, patch = version?.patch;
+    if (typeof major !== "number" || typeof minor !== "number" || typeof patch !== "number") {
+      throw new Error("Neovim did not report a recognizable API version");
+    }
+    if (major * 1e4 + minor * 100 + patch < MINIMUM_VERSION) {
+      throw new Error(`Neovim ${major}.${minor}.${patch} is too old; pi-view editing needs nvim >= 0.9 on PATH`);
+    }
+  }
+  rememberStderr(chunk) {
+    this.stderrTail = (this.stderrTail + chunk.toString("utf8")).slice(-500);
+  }
+  onSessionEnd(code, signal) {
+    if (this.finished) return;
+    if (!this.drawing && !this.userExit) {
+      const detail = this.stderrTail.trim();
+      const cause = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+      this.fail(`Neovim exited during startup (${cause})${detail ? `: ${detail}` : ""}`);
+      return;
+    }
+    this.finishLocally();
+    if (this.userExit) this.options.onExit("quit");
+    else {
+      const detail = signal ? `Neovim terminated by signal ${signal}` : `Neovim exited with code ${code ?? "unknown"}`;
+      this.options.onExit("crashed", detail);
+    }
+  }
+  /** First screen output: the session is interactive, so stand down the guard. */
+  markDrawing() {
+    if (this.drawing) return;
+    this.drawing = true;
+    clearTimeout(this.readyTimer);
+    this.readyTimer = void 0;
+    this.options.onReady();
+  }
+  /** Terminal failure: report an actionable message, keep the preview alive. */
+  fail(message) {
+    const firstFailure = !this.finished;
+    this.finished = true;
+    this.clearTimers();
+    this.rejectAll(new Error(message));
+    this.pasteBuffer = void 0;
+    try {
+      this.child?.kill("SIGKILL");
+    } catch {
+    }
+    if (firstFailure) this.options.onError(safeText(message));
+  }
+  clearTimers() {
+    clearTimeout(this.readyTimer);
+    clearTimeout(this.pasteTimer);
+    clearTimeout(this.killTimer);
+    this.readyTimer = void 0;
+    this.pasteTimer = void 0;
+    this.killTimer = void 0;
+  }
+};
+function translateKeys(data) {
+  if (!data || MOUSE_PACKET.test(data)) return "";
+  const key = parseKey(data);
+  if (key !== void 0) return notationFor(key);
+  return literalNotation(data);
+}
+function notationFor(keyId) {
+  const modifiers = keyId.split("+");
+  const base = modifiers.pop() ?? "";
+  if (modifiers.length === 0) {
+    if (base === "space") return " ";
+    if (base.length === 1) return base === "<" ? "<LT>" : base;
+    const named = NOTATION_BY_KEY[base];
+    return named ? `<${named}>` : "";
+  }
+  let inner = NOTATION_BY_KEY[base];
+  if (!inner) {
+    if (base.length !== 1) return "";
+    if (modifiers.length === 1 && modifiers[0] === "shift") return base === "<" ? "<LT>" : base.toUpperCase();
+    inner = base.toUpperCase();
+  }
+  const prefix = modifiers.map((modifier) => NOTATION_BY_MODIFIER[modifier] ?? modifier.toUpperCase()).join("-");
+  return `<${prefix}-${inner}>`;
+}
+function literalNotation(text) {
+  let out = "";
+  for (const char of text) {
+    if (char === "<") {
+      out += "<LT>";
+      continue;
+    }
+    if (char === "\r" || char === "\n") {
+      out += "<CR>";
+      continue;
+    }
+    if (char === "	") {
+      out += "<Tab>";
+      continue;
+    }
+    if (char === "\x1B") {
+      out += "<Esc>";
+      continue;
+    }
+    if (char === "\x7F") {
+      out += "<BS>";
+      continue;
+    }
+    const code = char.charCodeAt(0);
+    if (code === 0) {
+      out += "<C-@>";
+      continue;
+    }
+    if (code <= 31 && char.length === 1) {
+      out += `<C-${String.fromCharCode(64 + code)}>`;
+      continue;
+    }
+    out += char;
+  }
+  return out;
+}
+function delay(ms) {
+  const { promise, resolve: resolve4 } = Promise.withResolvers();
+  const timer = setTimeout(resolve4, ms);
+  timer.unref();
+  return promise;
+}
+function describe(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(describe).filter(Boolean).join(": ");
+  if (value === null || value === void 0) return "";
+  return safeText(String(value));
+}
+
 // src/viewer.ts
 function markdownSourceUnits(source) {
   const units = [];
@@ -2218,6 +4722,7 @@ n / N                      Next / previous search match
 w                          Toggle line wrapping
 l                          Toggle source line numbers
 s                          Markdown source / PDF extracted text
+e                          Edit with Neovim (:w saves, :q! discards, :q returns)
 Enter or i                 Focus the first visible Markdown image
 b                          Return from an image/help/diagnostics
 + / -                      Zoom a focused image or PDF page
@@ -2233,7 +4738,7 @@ o                          Browse the current file's directory
 PNG, JPEG, static GIF, WebP and SVG; SVG is rasterized.
 Images are bounded to 4096px per side; actual size uses that raster.
 PDF requires Poppler. Scans have no searchable text without OCR.
-No HTML/webpages, animation, JavaScript or automatic remote fetching.
+Previews exclude HTML/webpages, animation, JavaScript and automatic remote fetching.
 Quick Open: arrows select, Tab completes, Enter opens; Esc clears then closes.
 PI_VIEW_SHORTCUT overrides Quick Open (for example: ctrl+alt+p).
 Ghostty forwarding if needed: keybind = super+p=csi:112;9u
@@ -2299,6 +4804,7 @@ var PreviewViewer = class {
   query = "";
   filter = "";
   picker;
+  editor;
   _focused = false;
   get focused() {
     return this._focused;
@@ -2310,6 +4816,11 @@ var PreviewViewer = class {
       this.detachMouse?.();
       this.detachMouse = void 0;
     } else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, (delta) => this.wheel(delta));
+  }
+  // True while an embedded editor session is starting or running: it owns
+  // every preview key, including the host's global shortcut.
+  get editing() {
+    return !!this.editor;
   }
   redraw(clearLayout = false) {
     if (clearLayout) {
@@ -2323,6 +4834,8 @@ var PreviewViewer = class {
     for (const frame of this.frames.values()) frame.component?.invalidate();
   }
   dispose() {
+    this.editor?.dispose();
+    this.editor = void 0;
     if (this.closed) return;
     this.closed = true;
     this.abort.abort();
@@ -2437,8 +4950,65 @@ var PreviewViewer = class {
   imageMode() {
     return !this.panel && !this.picker && (!!this.focusImage || this.document?.kind === "image" || this.document?.kind === "pdf" && !this.source);
   }
+  editable() {
+    return !this.loading && !this.panel && !this.picker && !this.imageMode() && (this.document?.kind === "text" || this.document?.kind === "markdown");
+  }
+  createEditor() {
+    return new NvimEditor(this.path, {
+      cols: this.width || 80,
+      rows: this.bodyHeight || 20,
+      onReady: () => {
+        if (this.closed) return;
+        this.message = "";
+        this.redraw();
+      },
+      onFlush: () => this.redraw(),
+      onError: (message) => {
+        if (this.closed) return;
+        this.editor = void 0;
+        if (!this.watcher) this.watchPath(this.path);
+        this.message = message;
+        this.redraw(true);
+      },
+      onExit: (reason, detail) => {
+        if (this.closed) return;
+        this.editor = void 0;
+        this.matchRow = void 0;
+        this.matchHit = void 0;
+        void this.open(this.path, true).then(() => {
+          if (!this.closed && !this.editor && reason === "crashed" && detail && !this.message) {
+            this.message = detail;
+            this.redraw();
+          }
+        });
+      },
+      onDirty: () => this.redraw()
+    });
+  }
+  startEditing() {
+    if (this.closed || this.editor || !this.editable()) return;
+    this.stopWatching();
+    this.clearFrames();
+    clearTimeout(this.reloadTimer);
+    this.matchRow = void 0;
+    this.matchHit = void 0;
+    this.message = "Starting Neovim\u2026";
+    this.editor = this.createEditor();
+    this.editor.start();
+    this.redraw(true);
+  }
+  requestClose() {
+    if (!this.editor) return true;
+    this.message = "Neovim session active \u2014 finish with :q or :wq (or :q! to discard)";
+    this.redraw();
+    return false;
+  }
   wheel(delta) {
     if (this.closed || this.inputMode || this.remotePrompt || !delta) return;
+    if (this.editor) {
+      this.editor.wheel(delta);
+      return;
+    }
     if (this.imageMode()) {
       if (this.document?.kind === "pdf") {
         const direction = Math.sign(delta);
@@ -2464,8 +5034,12 @@ var PreviewViewer = class {
   }
   handleInput(data) {
     if (this.closed || isKeyRelease(data)) return;
+    if (this.editor) {
+      this.editor.input(data);
+      return;
+    }
     const raw = data;
-    const key = parseKey(data);
+    const key = parseKey2(data);
     if (key?.length === 1) data = key;
     else if (key && /^shift\+[a-z]$/.test(key)) data = key.slice(-1).toUpperCase();
     else if (key === "shift+=") data = "+";
@@ -2516,7 +5090,7 @@ var PreviewViewer = class {
       return;
     }
     if (data === "o") {
-      void this.open(this.picker?.directory ?? dirname2(this.path));
+      void this.open(this.picker?.directory ?? dirname3(this.path));
       return;
     }
     if (data === "R" && this.document?.kind === "markdown") {
@@ -2531,12 +5105,16 @@ var PreviewViewer = class {
     if (this.picker && !this.panel) {
       const entries = this.filteredEntries();
       if (matchesKey(data, "enter") && entries[this.picker.selected]) void this.open(entries[this.picker.selected].path);
-      else if (matchesKey(data, "backspace") || matchesKey(data, "left")) void this.open(dirname2(this.picker.directory));
+      else if (matchesKey(data, "backspace") || matchesKey(data, "left")) void this.open(dirname3(this.picker.directory));
       else if (matchesKey(data, "up") || data === "k") this.picker.selected = Math.max(0, this.picker.selected - 1);
       else if (matchesKey(data, "down") || data === "j") this.picker.selected = Math.min(entries.length - 1, this.picker.selected + 1);
       else if (matchesKey(data, "pageUp")) this.picker.selected = Math.max(0, this.picker.selected - this.bodyHeight);
       else if (matchesKey(data, "pageDown")) this.picker.selected = Math.min(entries.length - 1, this.picker.selected + this.bodyHeight);
       this.redraw();
+      return;
+    }
+    if (data === "e" && this.editable()) {
+      this.startEditing();
       return;
     }
     if (data === "s" && !this.panel && (this.document?.kind === "markdown" || this.document?.kind === "pdf")) {
@@ -2690,7 +5268,7 @@ var PreviewViewer = class {
       const theme = getMarkdownTheme();
       const highlight = theme.highlightCode;
       theme.highlightCode = (code, lang) => code.length <= 1e5 && highlight ? highlight(code, lang) : code.split("\n");
-      const renderWidth = this.wrap ? width : Math.min(4096, this.document.source.split("\n").reduce((max, line) => Math.max(max, visibleWidth(line)), width));
+      const renderWidth = this.wrap ? width : Math.min(4096, this.document.source.split("\n").reduce((max, line) => Math.max(max, visibleWidth2(line)), width));
       blocks = this.document.blocks.map((block) => block.kind === "image" ? { kind: "image", target: block.target, alt: block.alt, rows: !capabilities().protocol || !this.remoteAllowed && /^https?:\/\//i.test(block.target) ? 1 : Math.max(2, Math.min(12, this.bodyHeight - 1)) } : this.markdownBlock(new Markdown(block.text, 0, 0, theme).render(renderWidth), block.text));
     } else if (this.document?.kind === "text" || this.document?.kind === "markdown") {
       blocks = [{ kind: "text", ...this.textLines(this.document.source, width, true) }];
@@ -2814,7 +5392,7 @@ var PreviewViewer = class {
     const allowRemote = this.remoteAllowed;
     const promise = this.imageJobs.then(() => {
       signal.throwIfAborted();
-      return page !== void 0 && target === `pdf:${page}` ? loadPdfPage(path3, page, signal) : loadImage(target, dirname2(path3), allowRemote, signal);
+      return page !== void 0 && target === `pdf:${page}` ? loadPdfPage(path3, page, signal) : loadImage(target, dirname3(path3), allowRemote, signal);
     });
     source.promise = promise.then((image) => {
       source.image = image;
@@ -2889,9 +5467,19 @@ var PreviewViewer = class {
     const status = frame.error ? ` \u2014 ${frame.error}` : " \u2014 loading\u2026";
     return [truncateToWidth(this.theme.fg("muted", `[${safeText(label)}]${status}`.replace(/[\n\t]/g, " ")), width), ...Array(rows - 1).fill("")];
   }
+  frame(title, body, status, width) {
+    const border = this.theme.fg("borderMuted", "\u2500".repeat(width));
+    return [
+      this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)),
+      border,
+      ...body.slice(0, this.bodyHeight),
+      border,
+      truncateToWidth(status.replace(/[\n\t]/g, " "), width)
+    ];
+  }
   render(width) {
     width = Math.max(1, width);
-    if (this.tui.terminal.rows < 6) return [truncateToWidth("pi-view \xB7 enlarge terminal \xB7 Esc: close", width)];
+    if (this.tui.terminal.rows < 6) return [truncateToWidth(this.editor ? "pi-view \xB7 enlarge terminal \xB7 Neovim active \u2014 finish with :q or :wq" : "pi-view \xB7 enlarge terminal \xB7 Esc: close", width)];
     this.requestedImages.clear();
     this.width = Math.max(1, width);
     this.bodyHeight = Math.max(1, this.tui.terminal.rows - 5);
@@ -2902,7 +5490,12 @@ var PreviewViewer = class {
     let title = this.picker ? this.picker.directory : this.path;
     if (this.panel) title = "pi-view";
     if (this.loading) body = ["Loading\u2026"];
-    else if (this.picker && !this.panel) {
+    else if (this.editor) {
+      this.editor.resize(width, this.bodyHeight);
+      const view = this.editor.render(this.focused);
+      body = view.rows.map((line) => truncateToWidth(line, width, ""));
+      title += ` \xB7 nvim${this.editor.dirty ? " \xB7 modified" : ""}${view.mode && view.mode !== "normal" ? ` \xB7 ${view.mode}` : ""}`;
+    } else if (this.picker && !this.panel) {
       const entries = this.filteredEntries();
       const start = Math.max(0, this.picker.selected - this.bodyHeight + 1);
       body = entries.slice(start, start + this.bodyHeight).map((entry, i) => {
@@ -2962,15 +5555,10 @@ var PreviewViewer = class {
       }
     }
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
-    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
+    if (this.editor) return this.frame(title, body, this.message || ":w save \xB7 :wq/:q return \xB7 :q! discard \xB7 keys go to Neovim", width);
+    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : `${this.editable() ? "e: edit \xB7 " : ""}\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close`);
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
-    return [
-      this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)),
-      this.theme.fg("borderMuted", "\u2500".repeat(width)),
-      ...body.slice(0, this.bodyHeight),
-      this.theme.fg("borderMuted", "\u2500".repeat(width)),
-      truncateToWidth(status.replace(/[\n\t]/g, " "), width)
-    ];
+    return this.frame(title, body, status, width);
   }
 };
 
@@ -3366,6 +5954,7 @@ function piView(pi) {
   let detachShortcut;
   let closePreview;
   let closeQuick;
+  let activeViewer;
   const completions = (args) => args.startsWith("--") ? ["--help", "--diagnostics"].filter((value) => value.startsWith(args)).map((value) => ({ value, label: value })) : completePath(args, cwd);
   const recordOpen = (path3) => {
     try {
@@ -3374,22 +5963,28 @@ function piView(pi) {
     }
   };
   async function showPreview(ctx, path3, initial) {
-    closePreview?.();
+    if (closePreview && !closePreview()) {
+      ctx.ui.notify("Neovim session active \u2014 finish with :q or :wq (or :q! to discard), then try again", "warning");
+      return;
+    }
     let viewer;
     let handle;
     let localClose;
     try {
       await ctx.ui.custom((tui, theme, _keys, done) => {
         let ended = false;
-        localClose = () => {
-          if (ended) return;
+        localClose = (force = false) => {
+          if (ended) return true;
+          if (!force && viewer && !viewer.requestClose()) return false;
           ended = true;
           viewer?.dispose();
           if (closePreview === localClose) closePreview = void 0;
           closeOwned(tui, handle, done);
+          return true;
         };
         viewer = new PreviewViewer(tui, theme, localClose, path3, initial, recordOpen);
         closePreview = localClose;
+        activeViewer = viewer;
         return viewer;
       }, {
         overlay: true,
@@ -3401,6 +5996,7 @@ function piView(pi) {
     } finally {
       viewer?.dispose();
       if (closePreview === localClose) closePreview = void 0;
+      if (activeViewer === viewer) activeViewer = void 0;
     }
   }
   async function showQuick(ctx) {
@@ -3444,12 +6040,13 @@ function piView(pi) {
   pi.on("session_start", (_event, ctx) => {
     lifetime++;
     cwd = ctx.cwd;
-    closePreview?.();
+    closePreview?.(true);
     closeQuick?.();
     detachShortcut?.();
     if (!ctx.hasUI) return;
     detachShortcut = ctx.ui.onTerminalInput((data) => {
       if (!matchesKey3(data, shortcut)) return;
+      if (activeViewer?.editing) return;
       if (!isKeyRelease2(data)) void showQuick(ctx).catch((error) => ctx.ui.notify(safeText(error.message), "error"));
       return { consume: true };
     });
@@ -3474,7 +6071,7 @@ function piView(pi) {
     lifetime++;
     detachShortcut?.();
     closeQuick?.();
-    closePreview?.();
+    closePreview?.(true);
     stopImageWorker();
   });
   for (const name of ["view", "v"]) {

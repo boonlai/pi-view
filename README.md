@@ -8,6 +8,7 @@ Preview Markdown, code, images, and PDFs inside [Pi](https://pi.dev) and [Oh My 
 - **Path completion** — press **Tab** to complete a path, then **Enter** to open.
 - **Search and navigate** — find text, flip PDF pages, zoom and pan images.
 - **Live reload** — previews refresh when the file changes.
+- **Edit in place** — press **`e`** in a text or Markdown preview to edit the real file with embedded Neovim.
 
 ## Add to your agent
 
@@ -19,13 +20,13 @@ pi install git:github.com/boonlai/pi-view
 omp install git+https://github.com/boonlai/pi-view.git
 ```
 
-Requires **Node.js 22.19+**. PDF support needs **Poppler** (`brew install poppler` or `sudo apt install poppler-utils`). Restart your agent after installing.
+Requires **Node.js 22.19+**. PDF support needs **Poppler** (`brew install poppler` or `sudo apt install poppler-utils`). Editing previews needs **Neovim 0.9 or newer** (`nvim` on `PATH`); everything else works without it. Restart your agent after installing.
 
 <details>
 <summary>Using SSH instead</summary>
 
 ```bash
-pi install git:git@github.com:boonlai/pi-view
+pi install git:git@github.com/boonlai/pi-view
 omp install git+ssh://git@github.com/boonlai/pi-view.git
 ```
 
@@ -66,6 +67,7 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 | Scroll text | Arrows, `j` / `k`, `PgUp` / `PgDn`, wheel |
 | Search text or filter a directory; next / previous match | `/`, then `n` / `N` for search matches |
 | Markdown source / PDF text view | `s` |
+| Edit the file with embedded Neovim | `e` (text / Markdown previews) |
 | Focus a Markdown image / return | `Enter` or `i` / `b` |
 | Zoom; fit / actual raster size | `+` / `-`; `0` / `1` |
 | Pan a zoomed image or PDF | Arrows |
@@ -86,13 +88,23 @@ The wheel scrolls text or turns PDF pages—it never zooms. PDF wheel paging has
 | SVG | Rasterized; external resources are rejected |
 | PDF | Page images and searchable extracted text; no OCR |
 
-No HTML, webpages, or script execution. Remote Markdown images stay blocked until you press **`R`**, then **`y`**—only allow URLs you trust.
+Previews do not open HTML/webpages or execute scripts. Remote Markdown images stay blocked until you press **`R`**, then **`y`**—only allow URLs you trust.
+
+## Edit with Neovim
+
+Press **`e`** while previewing a text, code, or Markdown file to edit the actual file on disk with `nvim`, embedded over pipes without taking over the terminal. Neovim reads the file itself; it does not edit a rendered or sanitized preview copy. Files must first pass the viewer's supported-format and size checks.
+
+- `:w` saves; `:q` / `:wq` return to the refreshed preview; `:q!` discards and returns. Normal Neovim protections stay intact—dirty `:q` refuses, and changed-on-disk warnings apply.
+- While editing, keys—including `Esc`, `Ctrl+C`, and the configured Quick Open shortcut—and the mouse wheel go to Neovim. Exit with `:q`, `:wq`, or `:q!` before opening another preview.
+- User startup files, plugins, ShaDa, and modelines are not loaded. Built-in filetype and syntax support remains available. This is a real local editor, not a sandbox: commands you enter can run programs.
+- Forced shutdown attempts to preserve Neovim's swap file. If a swap survives, use Neovim's recovery prompt or `nvim -r <file>`; recovery is not a substitute for `:w`.
+- Missing or too-old Neovim shows an actionable message and the preview stays usable—press `e` again to retry.
 
 <details>
 <summary>Terminal setup and limits</summary>
 
 - Graphics follow the host's detected protocol. Unsupported terminals fall back to image labels and PDF text. Use `/view --diagnostics` to inspect support, or `PI_VIEW_IMAGES=off` to force fallbacks.
-- OMP's image worker needs `node` on `PATH`, or an executable path in `PI_VIEW_NODE`. PDF tools (`pdfinfo`, `pdftoppm`, `pdftotext`) must also be on `PATH`.
+- OMP's image worker needs `node` on `PATH`, or an executable path in `PI_VIEW_NODE`. PDF tools (`pdfinfo`, `pdftoppm`, `pdftotext`) must be on `PATH` for PDFs; editing additionally needs `nvim` 0.9+.
 - Standalone Quick Open in OMP uses keyboard navigation; wheel input works when it is layered over a preview.
 - If the terminal intercepts your shortcut, use `/view` or choose another binding. Ghostty can forward the default Cmd+P with:
 

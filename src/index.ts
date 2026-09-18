@@ -46,8 +46,9 @@ export default function piView(pi: ExtensionAPI): void {
   // across the awaited ctx.ui.custom are dropped instead of leaking late UI.
   let lifetime = 0;
   let detachShortcut: (() => void) | undefined;
-  let closePreview: (() => void) | undefined;
+  let closePreview: ((force?: boolean) => boolean) | undefined;
   let closeQuick: (() => void) | undefined;
+  let activeViewer: PreviewViewer | undefined;
 
   const completions = (args: string): AutocompleteItem[] | null => args.startsWith("--")
     ? ["--help", "--diagnostics"].filter(value => value.startsWith(args)).map(value => ({ value, label: value }))
@@ -62,21 +63,27 @@ export default function piView(pi: ExtensionAPI): void {
   };
 
   async function showPreview(ctx: ExtensionContext, path: string, initial?: "help" | "diagnostics"): Promise<void> {
-    closePreview?.();
+    if (closePreview && !closePreview()) {
+      ctx.ui.notify("Neovim session active — finish with :q or :wq (or :q! to discard), then try again", "warning");
+      return;
+    }
     let viewer: PreviewViewer | undefined;
     let handle: OverlayHandle | undefined;
-    let localClose: (() => void) | undefined;
+    let localClose: ((force?: boolean) => boolean) | undefined;
     try {
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
         let ended = false;
-        localClose = () => {
-          if (ended) return;
+        localClose = (force = false): boolean => {
+          if (ended) return true;
+          if (!force && viewer && !viewer.requestClose()) return false;
           ended = true; viewer?.dispose();
           if (closePreview === localClose) closePreview = undefined;
           closeOwned(tui, handle, done);
+          return true;
         };
         viewer = new PreviewViewer(tui, theme, localClose, path, initial, recordOpen);
         closePreview = localClose;
+        activeViewer = viewer;
         return viewer;
       }, {
         overlay: true,
@@ -86,6 +93,7 @@ export default function piView(pi: ExtensionAPI): void {
     } finally {
       viewer?.dispose();
       if (closePreview === localClose) closePreview = undefined;
+      if (activeViewer === viewer) activeViewer = undefined;
     }
   }
 
@@ -124,7 +132,7 @@ export default function piView(pi: ExtensionAPI): void {
     lifetime++;
     cwd = ctx.cwd;
     // A new session must not inherit the previous session's overlays.
-    closePreview?.();
+    closePreview?.(true);
     closeQuick?.();
     detachShortcut?.();
     if (!ctx.hasUI) return;
@@ -132,6 +140,9 @@ export default function piView(pi: ExtensionAPI): void {
     // registration is redundant and rejects reserved chords such as Ctrl+P.
     detachShortcut = ctx.ui.onTerminalInput(data => {
       if (!matchesKey(data, shortcut)) return;
+      // While an embedded editor session owns the preview it owns this
+      // shortcut too (nvim insert-mode Ctrl+P): pass the key through.
+      if (activeViewer?.editing) return;
       if (!isKeyRelease(data)) void showQuick(ctx).catch(error => ctx.ui.notify(safeText((error as Error).message), "error"));
       return { consume: true };
     });
@@ -155,8 +166,7 @@ export default function piView(pi: ExtensionAPI): void {
       }));
     }
   });
-  pi.on("session_shutdown", () => { lifetime++; detachShortcut?.(); closeQuick?.(); closePreview?.(); stopImageWorker(); });
-
+  pi.on("session_shutdown", () => { lifetime++; detachShortcut?.(); closeQuick?.(); closePreview?.(true); stopImageWorker(); });
   for (const name of ["view", "v"]) {
     pi.registerCommand(name, {
       description: "Preview a file or leave blank to trigger Quick Open",

@@ -8,6 +8,7 @@ import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, tru
 import { listDirectory, MAX_LIST_ENTRIES, type FileEntry } from "./paths.ts";
 import { loadDocument, loadImage, loadPdfPage, mediaDiagnostics, pdfText, renderRaster, safeText, type ImageSource, type PreviewDocument } from "./documents.ts";
 import { attachMouse, capabilities, createTerminalImage, type TerminalImage } from "./host.ts";
+import { NvimEditor, type NvimEditingSession } from "./nvim.ts";
 
 type TextUnit = { content: string; spans: { row: number; start: number; end: number }[] };
 type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
@@ -63,6 +64,7 @@ n / N                      Next / previous search match
 w                          Toggle line wrapping
 l                          Toggle source line numbers
 s                          Markdown source / PDF extracted text
+e                          Edit with Neovim (:w saves, :q! discards, :q returns)
 Enter or i                 Focus the first visible Markdown image
 b                          Return from an image/help/diagnostics
 + / -                      Zoom a focused image or PDF page
@@ -78,7 +80,7 @@ o                          Browse the current file's directory
 PNG, JPEG, static GIF, WebP and SVG; SVG is rasterized.
 Images are bounded to 4096px per side; actual size uses that raster.
 PDF requires Poppler. Scans have no searchable text without OCR.
-No HTML/webpages, animation, JavaScript or automatic remote fetching.
+Previews exclude HTML/webpages, animation, JavaScript and automatic remote fetching.
 Quick Open: arrows select, Tab completes, Enter opens; Esc clears then closes.
 PI_VIEW_SHORTCUT overrides Quick Open (for example: ctrl+alt+p).
 Ghostty forwarding if needed: keybind = super+p=csi:112;9u
@@ -129,6 +131,7 @@ export class PreviewViewer implements Component {
   private query = "";
   private filter = "";
   private picker?: { directory: string; entries: FileEntry[]; selected: number };
+  private editor?: NvimEditingSession;
   private _focused = false;
 
   constructor(private tui: TUI, private theme: Theme, private done: () => void, path: string, initial?: "help" | "diagnostics", private onOpen?: (path: string) => void) {
@@ -147,6 +150,10 @@ export class PreviewViewer implements Component {
     else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, delta => this.wheel(delta));
   }
 
+  // True while an embedded editor session is starting or running: it owns
+  // every preview key, including the host's global shortcut.
+  get editing(): boolean { return !!this.editor; }
+
   private redraw(clearLayout = false): void {
     if (clearLayout) { this.layout = undefined; this.matchRow = undefined; }
     if (!this.closed) this.tui.requestRender();
@@ -158,6 +165,7 @@ export class PreviewViewer implements Component {
   }
 
   dispose(): void {
+    this.editor?.dispose(); this.editor = undefined;
     if (this.closed) return;
     this.closed = true;
     this.abort.abort();
@@ -255,8 +263,38 @@ export class PreviewViewer implements Component {
     return !this.panel && !this.picker && (!!this.focusImage || this.document?.kind === "image" || (this.document?.kind === "pdf" && !this.source));
   }
 
+  private editable(): boolean { return !this.loading && !this.panel && !this.picker && !this.imageMode() && (this.document?.kind === "text" || this.document?.kind === "markdown"); }
+
+  protected createEditor(): NvimEditingSession {
+    return new NvimEditor(this.path, {
+      cols: this.width || 80, rows: this.bodyHeight || 20,
+      onReady: () => { if (this.closed) return; this.message = ""; this.redraw(); },
+      onFlush: () => this.redraw(),
+      onError: message => { if (this.closed) return; this.editor = undefined; if (!this.watcher) this.watchPath(this.path); this.message = message; this.redraw(true); },
+      onExit: (reason, detail) => { if (this.closed) return; this.editor = undefined; this.matchRow = undefined; this.matchHit = undefined; void this.open(this.path, true).then(() => { if (!this.closed && !this.editor && reason === "crashed" && detail && !this.message) { this.message = detail; this.redraw(); } }); },
+      onDirty: () => this.redraw(),
+    });
+  }
+
+  private startEditing(): void {
+    if (this.closed || this.editor || !this.editable()) return;
+    this.stopWatching(); this.clearFrames();
+    clearTimeout(this.reloadTimer);
+    this.matchRow = undefined; this.matchHit = undefined;
+    this.message = "Starting Neovim…";
+    this.editor = this.createEditor(); this.editor.start();
+    this.redraw(true);
+  }
+
+  requestClose(): boolean {
+    if (!this.editor) return true;
+    this.message = "Neovim session active — finish with :q or :wq (or :q! to discard)";
+    this.redraw(); return false;
+  }
+
   wheel(delta: number): void {
     if (this.closed || this.inputMode || this.remotePrompt || !delta) return;
+    if (this.editor) { this.editor.wheel(delta); return; }
     if (this.imageMode()) {
       if (this.document?.kind === "pdf") {
         const direction = Math.sign(delta);
@@ -285,6 +323,7 @@ export class PreviewViewer implements Component {
 
   handleInput(data: string): void {
     if (this.closed || isKeyRelease(data)) return;
+    if (this.editor) { this.editor.input(data); return; }
     const raw = data;
     const key = parseKey(data);
     if (key?.length === 1) data = key;
@@ -322,6 +361,7 @@ export class PreviewViewer implements Component {
       else if (matchesKey(data, "pageDown")) this.picker.selected = Math.min(entries.length - 1, this.picker.selected + this.bodyHeight);
       this.redraw(); return;
     }
+    if (data === "e" && this.editable()) { this.startEditing(); return; }
     if (data === "s" && !this.panel && (this.document?.kind === "markdown" || this.document?.kind === "pdf")) {
       this.source = !this.source; this.focusImage = undefined; this.offset = 0; this.clearFrames();
       if (this.source && this.document.kind === "pdf" && this.pdfSource === undefined) void this.loadPdfText();
@@ -632,9 +672,15 @@ export class PreviewViewer implements Component {
     return [truncateToWidth(this.theme.fg("muted", `[${safeText(label)}]${status}`.replace(/[\n\t]/g, " ")), width), ...Array(rows - 1).fill("")];
   }
 
+  private frame(title: string, body: string[], status: string, width: number): string[] {
+    const border = this.theme.fg("borderMuted", "─".repeat(width));
+    return [this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)), border,
+      ...body.slice(0, this.bodyHeight), border, truncateToWidth(status.replace(/[\n\t]/g, " "), width)];
+  }
+
   render(width: number): string[] {
     width = Math.max(1, width);
-    if (this.tui.terminal.rows < 6) return [truncateToWidth("pi-view · enlarge terminal · Esc: close", width)];
+    if (this.tui.terminal.rows < 6) return [truncateToWidth(this.editor ? "pi-view · enlarge terminal · Neovim active — finish with :q or :wq" : "pi-view · enlarge terminal · Esc: close", width)];
     this.requestedImages.clear();
     this.width = Math.max(1, width);
     this.bodyHeight = Math.max(1, this.tui.terminal.rows - 5);
@@ -645,6 +691,12 @@ export class PreviewViewer implements Component {
     let title = this.picker ? this.picker.directory : this.path;
     if (this.panel) title = "pi-view";
     if (this.loading) body = ["Loading…"];
+    else if (this.editor) {
+      this.editor.resize(width, this.bodyHeight);
+      const view = this.editor.render(this.focused);
+      body = view.rows.map(line => truncateToWidth(line, width, ""));
+      title += ` · nvim${this.editor.dirty ? " · modified" : ""}${view.mode && view.mode !== "normal" ? ` · ${view.mode}` : ""}`;
+    }
     else if (this.picker && !this.panel) {
       const entries = this.filteredEntries();
       const start = Math.max(0, this.picker.selected - this.bodyHeight + 1);
@@ -697,12 +749,12 @@ export class PreviewViewer implements Component {
       if (source.promise && !this.requestedImages.has(target)) { source.abort?.abort(); this.images.delete(target); }
     }
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
+    if (this.editor) return this.frame(title, body, this.message || ":w save · :wq/:q return · :q! discard · keys go to Neovim", width);
     let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow · any other key: deny"
       : this.message || (this.imageMode() ? `+/-: zoom · arrows: pan${document?.kind === "pdf" ? " · wheel: pages" : ""} · 0: fit · 1: actual · b: back · Esc: close`
       : this.picker && !this.panel ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
-      : "↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close");
+      : `${this.editable() ? "e: edit · " : ""}↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close`);
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
-    return [this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)), this.theme.fg("borderMuted", "─".repeat(width)),
-      ...body.slice(0, this.bodyHeight), this.theme.fg("borderMuted", "─".repeat(width)), truncateToWidth(status.replace(/[\n\t]/g, " "), width)];
+    return this.frame(title, body, status, width);
   }
 }

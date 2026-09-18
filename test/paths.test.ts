@@ -5,21 +5,29 @@ import * as path from "node:path";
 import { MAX_COMPLETIONS, MAX_LIST_ENTRIES, completePath, listDirectory, resolvePath } from "../src/paths.ts";
 import { after, test } from "node:test";
 const tmp = mkdtempSync(path.join(tmpdir(), "pi-view-paths-"));
+// Windows filenames may not contain double quotes or backslashes, so the
+// tricky-name fixtures use per-OS spellings; expectations stay independent
+// literals on both sides.
+const backName = process.platform === "win32" ? "back-slash.txt" : "back\\slash.txt";
+const quotedName = process.platform === "win32" ? "a 'quoted' file.txt" : 'a "quoted" file.txt';
+const quotedValue = process.platform === "win32"
+	? '"my docs/a \'quoted\' file.txt"'
+	: '"my docs/a \\"quoted\\" file.txt"';
 
 mkdirSync(path.join(tmp, "nested"));
 writeFileSync(path.join(tmp, "nested/alpha.txt"), "a");
 writeFileSync(path.join(tmp, "nested/beta.md"), "b");
 mkdirSync(path.join(tmp, "my docs"));
-writeFileSync(path.join(tmp, 'my docs/a "quoted" file.txt'), "q");
+writeFileSync(path.join(tmp, "my docs", quotedName), "q");
 mkdirSync(path.join(tmp, "my docs/deep"));
-writeFileSync(path.join(tmp, "back\\slash.txt"), "b");
+writeFileSync(path.join(tmp, backName), "b");
 writeFileSync(path.join(tmp, "naïve — café.txt"), "u");
 writeFileSync(path.join(tmp, "ünïcode.md"), "u2");
 writeFileSync(path.join(tmp, ".env"), "h");
 mkdirSync(path.join(tmp, ".hidden-dir"));
 writeFileSync(path.join(tmp, "README.md"), "r");
 writeFileSync(path.join(tmp, "plain.txt"), "p");
-symlinkSync(path.join(tmp, "nested"), path.join(tmp, "link"));
+symlinkSync(path.join(tmp, "nested"), path.join(tmp, "link"), process.platform === "win32" ? "junction" : "dir");
 symlinkSync(path.join(tmp, "no-such-target"), path.join(tmp, "broken"));
 mkdirSync(path.join(tmp, "locked-dir"));
 writeFileSync(path.join(tmp, "locked-dir/inner.txt"), "l");
@@ -71,7 +79,7 @@ test("completions are directories first and every value roundtrips to a real fil
 		"my docs/",
 		"nested/",
 		"README.md",
-		"back\\slash.txt",
+		backName,
 		"broken",
 		"naïve — café.txt",
 		"plain.txt",
@@ -108,15 +116,15 @@ test("names with spaces and quotes roundtrip through editor replacement", () => 
 	// the editor replaces everything after "/view " with item.value, so feeding
 	// the value back as the argument is exactly what the next Tab does
 	const step2 = completePath(step1[0].value, tmp)!;
-	assert.deepEqual(step2.map(i => i.value), ['"my docs/deep/', '"my docs/a \\"quoted\\" file.txt"']);
-	assert.equal(resolvePath(step2[1].value, tmp), path.join(tmp, 'my docs/a "quoted" file.txt'));
+	assert.deepEqual(step2.map(i => i.value), ['"my docs/deep/', quotedValue]);
+	assert.equal(resolvePath(step2[1].value, tmp), path.join(tmp, "my docs", quotedName));
 	const again = completePath(step2[1].value, tmp)!;
 	assert.deepEqual(again.map(i => i.value), [step2[1].value]); // completing an exact name yields itself
 	const unicode = completePath("n", tmp)!;
 	assert.deepEqual(unicode.map(i => i.value), ["nested/", '"naïve — café.txt"']);
 	assert.equal(resolvePath(unicode[1].value, tmp), path.join(tmp, "naïve — café.txt"));
 	const slashed = completePath("back", tmp)!;
-	assert.deepEqual(slashed, [{ value: "back\\slash.txt", label: "back\\slash.txt" }]);
+	assert.deepEqual(slashed, [{ value: backName, label: backName }]);
 });
 
 
@@ -129,11 +137,29 @@ test("symlinks to directories descend; broken symlinks complete as files", () =>
 });
 
 test("tilde completions preserve the ~ prefix", () => {
-	const items = completePath("~", tmp)!;
-	assert.ok(items.length > 0);
-	for (const item of items) {
-		assert.ok(item.value.startsWith("~/"), item.value);
-		assert.ok(resolvePath(item.value, tmp).startsWith(homedir()), item.value);
+	// The real user home is arbitrary (and may contain spaced names that are
+	// legally quoted), so the test completes against an isolated temp home.
+	const home = mkdtempSync(path.join(tmpdir(), "pi-view-paths-home-"));
+	writeFileSync(path.join(home, "home-file.txt"), "h");
+	mkdirSync(path.join(home, "spaced dir"));
+	const previousHome = process.env.HOME;
+	const previousUserprofile = process.env.USERPROFILE;
+	process.env.HOME = home;
+	process.env.USERPROFILE = home; // Windows: os.homedir() reads USERPROFILE, not HOME
+	try {
+		const items = completePath("~", tmp)!;
+		const plain = items.find(item => item.label === "home-file.txt");
+		assert.ok(plain, "plain home entry must complete");
+		assert.ok(plain.value.startsWith("~/"), plain.value); // tilde spelling survives unquoted
+		assert.equal(resolvePath(plain.value, tmp), path.join(home, "home-file.txt"));
+		const spaced = items.find(item => item.label === "spaced dir/");
+		assert.ok(spaced, "spaced home entry must complete");
+		assert.equal(spaced.value, '"~/spaced dir/'); // spaced entries keep the ~ under optional quoting
+		assert.equal(resolvePath(spaced.value, tmp), path.join(home, "spaced dir"));
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+		if (previousUserprofile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserprofile;
+		rmSync(home, { recursive: true, force: true });
 	}
 });
 
@@ -148,7 +174,8 @@ test("nonexistent and unreadable targets return no completions", () => {
 	assert.equal(completePath("plain.txt/", tmp), null); // not a directory
 	assert.equal(completePath("--flag", tmp), null);
 	assert.equal(completePath("https://example.com/a", tmp), null);
-	if (!isRoot) assert.equal(completePath("locked-dir/", tmp), null); // EACCES
+	// POSIX-only: Windows ignores directory read permission bits, so EACCES never happens there.
+	if (!isRoot && process.platform !== "win32") assert.equal(completePath("locked-dir/", tmp), null); // EACCES
 });
 
 test("listDirectory returns directories first, sorted, with resolved symlinks", async () => {
@@ -156,7 +183,7 @@ test("listDirectory returns directories first, sorted, with resolved symlinks", 
 	const dirs = entries.filter(e => e.directory).map(e => e.name);
 	const files = entries.filter(e => !e.directory).map(e => e.name);
 	assert.deepEqual(dirs, [".hidden-dir", "link", "locked-dir", "my docs", "nested"]);
-	assert.deepEqual(files, [".env", "README.md", "back\\slash.txt", "broken", "naïve — café.txt", "plain.txt", "ünïcode.md"]);
+	assert.deepEqual(files, [".env", "README.md", backName, "broken", "naïve — café.txt", "plain.txt", "ünïcode.md"]);
 	assert.deepEqual(entries.map(e => e.path), entries.map(e => path.join(tmp, e.name)));
 	assert.ok(entries.find(e => e.name === "link")!.directory);
 	assert.ok(!entries.find(e => e.name === "broken")!.directory);
@@ -177,7 +204,10 @@ test("listing and completions are bounded", async () => {
 test("completion values quote apostrophes, flags and literal tildes without exposing controls", () => {
 	const dir = mkdtempSync(path.join(tmpdir(), "pi-view-quoted-"));
 	try {
-		for (const name of ["it's.txt", "-flag.txt", "~", "bad\x1b[2J.txt"]) writeFileSync(path.join(dir, name), "");
+		for (const name of ["it's.txt", "-flag.txt", "~"]) writeFileSync(path.join(dir, name), "");
+		// Control characters are illegal in Windows filenames; on POSIX the ESC
+		// name exercises the completer's control-name filter.
+		if (process.platform !== "win32") writeFileSync(path.join(dir, "bad\x1b[2J.txt"), "");
 		const items = completePath("", dir)!;
 		assert.equal(items.length, 3);
 		for (const name of ["it's.txt", "-flag.txt", "~"]) {
