@@ -31,6 +31,26 @@ function sgrCodes(row: string | undefined): string[] {
   return [...(row ?? "").matchAll(/\x1b\[([0-9;]+)m/g)].map(match => match[1]!);
 }
 
+// Observe inverse-video text as a terminal does, independently of SGR grouping.
+function invertedText(row: string): string {
+  let inverted = false;
+  let text = "";
+  for (const token of row.replaceAll(CURSOR_MARKER, "").split(/(\x1b\[[\d;]*m)/u)) {
+    if (token.startsWith("\x1b[")) {
+      const codes = token.slice(2, -1).split(";").map(Number);
+      for (let i = 0; i < codes.length; i++) {
+        const code = codes[i];
+        if (code === 38 || code === 48) i += codes[i + 1] === 2 ? 4 : 2;
+        else if (code === 0 || code === 27) inverted = false;
+        else if (code === 7) inverted = true;
+      }
+    } else if (inverted) {
+      text += token;
+    }
+  }
+  return text;
+}
+
 test("grid_line paints cells, whole-cell repeats, and column offsets", () => {
   const view = new NvimGrid(true);
   redraw(view, ["grid_resize", [1, 10, 1]], ["grid_line", [1, 0, 0, line("hello")]]);
@@ -95,7 +115,7 @@ test("reverse swaps known colors and falls back to SGR 7 without them", () => {
     `the fallback cell must not invent colors: ${JSON.stringify(fallback)}`);
 });
 
-test("cursor marker anchors before wide cells and tracks off-row cursors", () => {
+test("focused cursor visibly paints wide and blank cells without a hardware cursor", () => {
   const view = new NvimGrid(true);
   redraw(view,
     // Neovim sends the wide character followed by an empty trailing half-cell.
@@ -104,12 +124,39 @@ test("cursor marker anchors before wide cells and tracks off-row cursors", () =>
     ["grid_cursor_goto", [1, 0, 1]]);
   const [wide] = view.render(true);
   const markerIn = wide!.indexOf(CURSOR_MARKER);
-  assert.ok(markerIn >= 0, `expected cursor marker in ${JSON.stringify(wide)}`);
-  assert.ok(wide!.slice(markerIn).startsWith(CURSOR_MARKER + "汉"), `expected marker before the wide char in ${JSON.stringify(wide)}`);
-  redraw(view, ["grid_cursor_goto", [1, 1, 9]]);
-  const [, beyond] = view.render(true);
-  assert.ok(beyond!.endsWith(CURSOR_MARKER), `expected marker at end of line in ${JSON.stringify(beyond)}`);
-  assert.ok(!view.render(false).some(rowText => rowText.includes(CURSOR_MARKER)), "unfocused renders carry no marker");
+  assert.ok(markerIn >= 0, "the host still receives the cursor position for IME");
+  assert.equal(plain(wide!.slice(0, markerIn)), "", "wide cursor anchors to the left half");
+  assert.equal(invertedText(wide!), "汉", "the cursor is visible without hardware cursor support");
+
+  redraw(view, ["grid_cursor_goto", [1, 1, 3]]);
+  const [previous, blank] = view.render(true);
+  assert.equal(invertedText(previous!), "", "moving the cursor leaves no stale highlight");
+  assert.equal(invertedText(blank!), " ", "an empty line still has a visible cursor");
+  assert.equal(plain(blank!.slice(0, blank!.indexOf(CURSOR_MARKER))), "   ");
+  for (const row of view.render(false)) {
+    assert.ok(!row.includes(CURSOR_MARKER), "unfocused renders carry no marker");
+    assert.equal(invertedText(row), "", "unfocused renders carry no software cursor");
+  }
+  view.busy = true;
+  for (const row of view.render(true)) {
+    assert.ok(!row.includes(CURSOR_MARKER));
+    assert.equal(invertedText(row), "", "busy Neovim hides both cursors");
+  }
+});
+
+test("cursor contrasts with reversed highlights and restores neighboring cell styles", () => {
+  const view = new NvimGrid(true);
+  redraw(view,
+    ["grid_resize", [1, 3, 2]],
+    ["hl_attr_define", [1, { reverse: true }, {}, []]],
+    ["hl_attr_define", [2, { foreground: 0x070707, background: 0xffffff, reverse: true }, {}, []]],
+    ["grid_line", [1, 0, 0, line("abc", 1)]],
+    ["grid_line", [1, 1, 0, line("xyz", 2)]],
+    ["grid_cursor_goto", [1, 0, 1]]);
+  assert.equal(invertedText(view.render(true)[0]!), "ac", "cursor cancels the existing inversion only at b");
+  assert.equal(invertedText(view.render(false)[0]!), "abc", "the original highlight remains unchanged");
+  redraw(view, ["grid_cursor_goto", [1, 1, 1]]);
+  assert.equal(invertedText(view.render(true)[1]!), "y", "explicitly swapped colors are inverted only at the cursor");
 });
 
 test("grid_scroll moves the region and blanks vacated rows", () => {

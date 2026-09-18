@@ -133,7 +133,7 @@ export class NvimGrid {
     }
   }
 
-  /** Committed ANSI lines, one per grid row, with cursor marker when focused. */
+  /** Committed ANSI lines with a software cursor and host cursor marker when focused. */
   render(focused: boolean): string[] {
     const lines: string[] = [];
     for (let row = 0; row < this.rows.length; row++) lines.push(this.renderRow(row, focused));
@@ -148,17 +148,27 @@ export class NvimGrid {
     let markerAt = -1;
     let column = 0;
     for (const cell of cells) {
-      // Place the marker before the cell that covers the cursor column, so
-      // wide characters anchor to their left half and cursors beyond the text
-      // fall through to the end-of-line placement below.
-      if (cursor?.row === row && markerAt < 0 && column + visibleWidth(cell.text) > cursor.col) markerAt = out.length;
+      // Wide characters anchor the cursor to their left half.
+      const width = visibleWidth(cell.text);
+      const atCursor = cursor?.row === row && markerAt < 0 && column + width > cursor.col;
+      if (atCursor) markerAt = out.length;
       const sgr = this.sgrFor(cell.attr);
       if (sgr !== open) {
         out += sgr === "" ? (open === "" ? "" : RESET) : RESET + sgr;
         open = sgr;
       }
-      out += cell.text;
-      column += visibleWidth(cell.text);
+      if (atCursor) {
+        // The host marker only positions an optional hardware cursor. Paint
+        // one too, as Pi/OMP inputs do, without changing host cursor settings.
+        // Cancel an existing SGR 7 rather than making it disappear into a
+        // reversed highlight; explicit swapped colors still need inversion.
+        const attr = this.attrs.get(cell.attr);
+        const reversed = attr?.reverse && (attr.foreground === undefined || attr.background === undefined);
+        out += (reversed ? "\x1b[27m" : "\x1b[7m") + cell.text + RESET + sgr;
+      } else {
+        out += cell.text;
+      }
+      column += width;
     }
     if (open !== "") out += RESET;
     if (cursor?.row === row && markerAt < 0) markerAt = out.length;

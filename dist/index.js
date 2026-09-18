@@ -4014,7 +4014,7 @@ var NvimGrid = class {
       }
     }
   }
-  /** Committed ANSI lines, one per grid row, with cursor marker when focused. */
+  /** Committed ANSI lines with a software cursor and host cursor marker when focused. */
   render(focused) {
     const lines = [];
     for (let row = 0; row < this.rows.length; row++) lines.push(this.renderRow(row, focused));
@@ -4028,14 +4028,22 @@ var NvimGrid = class {
     let markerAt = -1;
     let column = 0;
     for (const cell of cells) {
-      if (cursor?.row === row && markerAt < 0 && column + visibleWidth(cell.text) > cursor.col) markerAt = out.length;
+      const width = visibleWidth(cell.text);
+      const atCursor = cursor?.row === row && markerAt < 0 && column + width > cursor.col;
+      if (atCursor) markerAt = out.length;
       const sgr = this.sgrFor(cell.attr);
       if (sgr !== open2) {
         out += sgr === "" ? open2 === "" ? "" : RESET : RESET + sgr;
         open2 = sgr;
       }
-      out += cell.text;
-      column += visibleWidth(cell.text);
+      if (atCursor) {
+        const attr = this.attrs.get(cell.attr);
+        const reversed = attr?.reverse && (attr.foreground === void 0 || attr.background === void 0);
+        out += (reversed ? "\x1B[27m" : "\x1B[7m") + cell.text + RESET + sgr;
+      } else {
+        out += cell.text;
+      }
+      column += width;
     }
     if (open2 !== "") out += RESET;
     if (cursor?.row === row && markerAt < 0) markerAt = out.length;

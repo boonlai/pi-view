@@ -46,6 +46,7 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
       import { readFile } from "node:fs/promises";
       import assert from "node:assert/strict";
       import { setTimeout as delay } from "node:timers/promises";
+      import { stripVTControlCharacters } from "node:util";
       import { CURSOR_MARKER, TUI } from "@earendil-works/pi-tui";
       import { ensureTheme, theme } from "@earendil-works/pi-coding-agent";
       import piView from ${JSON.stringify(join(root, "src/index.ts"))};
@@ -137,7 +138,8 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
           // on screen. The title would truncate long paths before "[+]"/
           // "modified" could ever render.
           await waitFor("inserted text visible in the editor grid", () =>
-            term.joined().split(CURSOR_MARKER).join("").includes("OMP-EDITED-7391"));
+            stripVTControlCharacters(surface.render(term.columns).join("\n").split(CURSOR_MARKER).join(""))
+              .includes("OMP-EDITED-7391"));
           term.key(":");
           term.key("w");
           term.key("\r");
@@ -148,7 +150,7 @@ test("OMP runtime edits a real file through embedded Neovim and saves it", { tim
           // Terminal writes are incremental and may omit an unchanged body.
           // Read the component's complete public render, not a raw write chunk.
           await waitFor("editor exit restores the refreshed preview", () => {
-            const frame = surface.render(term.columns).join("\n").split(CURSOR_MARKER).join("");
+            const frame = stripVTControlCharacters(surface.render(term.columns).join("\n").split(CURSOR_MARKER).join(""));
             return !surface.editing && frame.includes("OMP-EDITED-7391");
           });
           term.key("\x1b");
