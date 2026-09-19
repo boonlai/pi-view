@@ -8,7 +8,7 @@ Preview Markdown, code, images, and PDFs inside [Pi](https://pi.dev) and [Oh My 
 - **Path completion** — press **Tab** to complete a path, then **Enter** to open.
 - **Search and navigate** — find text, flip PDF pages, zoom and pan images.
 - **Live reload** — previews refresh when the file changes.
-- **Edit in place** — press **`e`** in a text or Markdown preview to edit the real file with embedded Neovim.
+- **Edit in place (optional)** — press **`e`** in a text or Markdown preview to edit the real file with [Neovim](#editing-with-neovim).
 
 ## Add to your agent
 
@@ -20,7 +20,9 @@ pi install git:github.com/boonlai/pi-view
 omp install git+https://github.com/boonlai/pi-view.git
 ```
 
-Requires **Node.js 22.19+**. PDF support needs **Poppler** (`brew install poppler` or `sudo apt install poppler-utils`). Editing previews needs **Neovim 0.9 or newer** (`nvim` on `PATH`); everything else works without it. Restart your agent after installing.
+Requires **Node.js 22.19+**. Restart your agent after installing.
+
+For OMP's image worker, `node` must be on `PATH`, or set `PI_VIEW_NODE` to its executable path. Package dependencies are installed with pi-view; optional tools for PDFs and editing are described below.
 
 <details>
 <summary>Using SSH instead</summary>
@@ -31,6 +33,73 @@ omp install git+ssh://git@github.com/boonlai/pi-view.git
 ```
 
 </details>
+
+## What works out of the box
+
+After installing pi-view and the requirements above, Quick Open, path completion, text search, and live reload need no extra tools. These preview formats are included:
+
+| Format | Support |
+| --- | --- |
+| Markdown | Rendered text, local images, source toggle |
+| UTF-8 text and code | Syntax highlighting where available, search, wrapping, line numbers |
+| PNG, JPEG, GIF, WebP | Zoom and pan in a graphics-capable terminal; GIFs are static |
+| SVG | Rasterized; external resources are rejected |
+
+Previews do not open HTML/webpages or execute scripts. Remote Markdown images stay blocked until you press **`R`**, then **`y`**—only allow URLs you trust.
+
+Image decoding is included; you do not need a separate image-conversion utility. See [inline graphics](#inline-graphics) for terminal requirements.
+
+## Optional support
+
+Install only the tools for the features you want. After installing tools or changing `PATH`, open a new terminal and restart your agent so it can find them.
+
+### PDF previews with Poppler
+
+PDF page images and searchable extracted text require **Poppler's command-line tools**: `pdfinfo`, `pdftoppm`, and `pdftotext`. All three must be on `PATH`. PDF text extraction does not perform OCR.
+
+| Platform | Install |
+| --- | --- |
+| macOS (Homebrew) | `brew install poppler` |
+| Debian / Ubuntu | `sudo apt install poppler-utils` |
+| Windows (Chocolatey) | `choco install poppler` |
+
+On Windows, Chocolatey's Poppler package does not add its tools directory to `PATH`. Add the installed `Library\bin` directory, typically `C:\ProgramData\chocolatey\lib\poppler\tools\poppler-<version>\Library\bin`, to your user `PATH`. Use the actual installed version directory, not the placeholder.
+
+Check from the terminal where you start Pi or OMP:
+
+```bash
+pdfinfo -v
+pdftoppm -v
+pdftotext -v
+```
+
+The output should identify Poppler, not similarly named Xpdf tools. Without Poppler, PDFs cannot be previewed; text, Markdown, and image previews still work.
+
+### Editing with Neovim
+
+Editing requires **Neovim 0.9 or newer**, with `nvim` on `PATH`. No Neovim plugins, Python provider, or language server are required.
+
+| Platform | Install |
+| --- | --- |
+| macOS (Homebrew) | `brew install neovim` |
+| Debian / Ubuntu | `sudo apt install neovim` |
+| Windows (Chocolatey) | `choco install neovim` |
+
+Verify with `nvim --version`. Some distribution packages are older than 0.9; if needed, use the [official Neovim installation instructions](https://github.com/neovim/neovim/blob/master/INSTALL.md) to install a supported version.
+
+Press **`e`** while previewing a text, code, or Markdown file to edit the actual file on disk with `nvim`, embedded over pipes without taking over the terminal. Neovim reads the file itself; it does not edit a rendered or sanitized preview copy. Files must first pass the viewer's supported-format and size checks.
+
+- `:w` saves; `:q` / `:wq` return to the refreshed preview; `:q!` discards and returns. Normal Neovim protections stay intact—dirty `:q` refuses, and changed-on-disk warnings apply.
+- While editing, keys—including `Esc`, `Ctrl+C`, and the configured Quick Open shortcut—and the mouse wheel go to Neovim. Exit with `:q`, `:wq`, or `:q!` before opening another preview.
+- User startup files and user plugins are not loaded; ShaDa and modelines are disabled. Built-in filetype and syntax support remains available. This is a real local editor, not a sandbox: commands you enter can run programs.
+- Forced shutdown attempts to preserve Neovim's swap file. If a swap survives, use Neovim's recovery prompt or `nvim -r <file>`; recovery is not a substitute for `:w`.
+- Missing or too-old Neovim shows an actionable message and the preview stays usable—press `e` again to retry.
+
+### Inline graphics
+
+Inline images, Markdown images, and PDF page images need a graphics-capable terminal supported by your host. pi-view follows the host's detected image protocol; there is no extra image tool to install.
+
+Unsupported terminals fall back to image labels and PDF text. The PDF text fallback still requires Poppler. Use `/view --diagnostics` to inspect terminal and tool support, or set `PI_VIEW_IMAGES=off` before starting the host to force these fallbacks.
 
 ## Open a file
 
@@ -78,33 +147,9 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 
 The wheel scrolls text or turns PDF pages—it never zooms. PDF wheel paging has a **200 ms cooldown**; reversing direction is immediate. In PDF text view, the wheel and `PgUp` / `PgDn` scroll text instead.
 
-## What opens
-
-| Format | Support |
-| --- | --- |
-| Markdown | Rendered text, local images, source toggle |
-| UTF-8 text and code | Syntax highlighting where available, search, wrapping, line numbers |
-| PNG, JPEG, GIF, WebP | Zoom and pan; GIFs are static |
-| SVG | Rasterized; external resources are rejected |
-| PDF | Page images and searchable extracted text; no OCR |
-
-Previews do not open HTML/webpages or execute scripts. Remote Markdown images stay blocked until you press **`R`**, then **`y`**—only allow URLs you trust.
-
-## Edit with Neovim
-
-Press **`e`** while previewing a text, code, or Markdown file to edit the actual file on disk with `nvim`, embedded over pipes without taking over the terminal. Neovim reads the file itself; it does not edit a rendered or sanitized preview copy. Files must first pass the viewer's supported-format and size checks.
-
-- `:w` saves; `:q` / `:wq` return to the refreshed preview; `:q!` discards and returns. Normal Neovim protections stay intact—dirty `:q` refuses, and changed-on-disk warnings apply.
-- While editing, keys—including `Esc`, `Ctrl+C`, and the configured Quick Open shortcut—and the mouse wheel go to Neovim. Exit with `:q`, `:wq`, or `:q!` before opening another preview.
-- User startup files and user plugins are not loaded; ShaDa and modelines are disabled. Built-in filetype and syntax support remains available. This is a real local editor, not a sandbox: commands you enter can run programs.
-- Forced shutdown attempts to preserve Neovim's swap file. If a swap survives, use Neovim's recovery prompt or `nvim -r <file>`; recovery is not a substitute for `:w`.
-- Missing or too-old Neovim shows an actionable message and the preview stays usable—press `e` again to retry.
-
 <details>
-<summary>Terminal setup and limits</summary>
+<summary>Terminal shortcuts and limits</summary>
 
-- Graphics follow the host's detected protocol. Unsupported terminals fall back to image labels and PDF text. Use `/view --diagnostics` to inspect support, or `PI_VIEW_IMAGES=off` to force fallbacks.
-- OMP's image worker needs `node` on `PATH`, or an executable path in `PI_VIEW_NODE`. PDF tools (`pdfinfo`, `pdftoppm`, `pdftotext`) must be on `PATH` for PDFs; editing additionally needs `nvim` 0.9+.
 - Standalone Quick Open in OMP uses keyboard navigation; wheel input works when it is layered over a preview.
 - If the terminal intercepts your shortcut, use `/view` or choose another binding. Ghostty can forward the default Cmd+P with:
 
