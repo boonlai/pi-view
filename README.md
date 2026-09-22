@@ -137,6 +137,7 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 | Search text or filter a directory; next / previous match | `/`, then `n` / `N` for search matches |
 | Markdown source / PDF text view | `s` |
 | Edit the file with embedded Neovim | `e` (text / Markdown previews) |
+| Toggle source line numbers (remembered) | `l` |
 | Focus a Markdown image / return | `Enter` or `i` / `b` |
 | Zoom; fit / actual raster size | `+` / `-`; `0` / `1` |
 | Pan a zoomed image or PDF | Arrows |
@@ -146,6 +147,8 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 | Help / diagnostics | `?` / `d` |
 
 The wheel scrolls text or turns PDF pages—it never zooms. PDF wheel paging has a **200 ms cooldown**; reversing direction is immediate. In PDF text view, the wheel and `PgUp` / `PgDn` scroll text instead.
+
+Press `l` to toggle source line numbers for text/code files and Markdown's `s` source view. The choice is remembered across files and sessions in `pi-view/settings.json` inside your config directory (`XDG_CONFIG_HOME`, then `APPDATA`, then `~/.config`); Pi and OMP settings are never touched, and I/O failures are silently ignored. Rendered Markdown rows and extracted PDF text never get synthetic numbers.
 
 <details>
 <summary>Terminal shortcuts and limits</summary>

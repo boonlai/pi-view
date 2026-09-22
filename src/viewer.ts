@@ -9,6 +9,7 @@ import { listDirectory, MAX_LIST_ENTRIES, type FileEntry } from "./paths.ts";
 import { loadDocument, loadImage, loadPdfPage, mediaDiagnostics, pdfText, renderRaster, safeText, type ImageSource, type PreviewDocument } from "./documents.ts";
 import { attachMouse, capabilities, createTerminalImage, type TerminalImage } from "./host.ts";
 import { NvimEditor, type NvimEditingSession } from "./nvim.ts";
+import { flushLineNumbersSave, queueLineNumbersSave, readLineNumbers } from "./settings.ts";
 
 type TextUnit = { content: string; spans: { row: number; start: number; end: number }[] };
 type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
@@ -62,7 +63,7 @@ Home / End                 Start / end of text
 /                          Search text (or filter the file picker)
 n / N                      Next / previous search match
 w                          Toggle line wrapping
-l                          Toggle source line numbers
+l                          Toggle source line numbers (remembered)
 s                          Markdown source / PDF extracted text
 e                          Edit with Neovim (:w saves, :q! discards, :q returns)
 Enter or i                 Focus the first visible Markdown image
@@ -105,7 +106,7 @@ export class PreviewViewer implements Component {
   private bodyHeight = 20;
   private totalRows = 0;
   private wrap = true;
-  private numbers = false;
+  private numbers = readLineNumbers();
   private source = false;
   private page = 1;
   private pageWheelAt = 0;
@@ -171,6 +172,7 @@ export class PreviewViewer implements Component {
     this.abort.abort();
     this.stopWatching();
     clearTimeout(this.reloadTimer);
+    flushLineNumbersSave();
     this.detachMouse?.(); this.detachMouse = undefined;
     this.clearFrames();
     this.images.clear();
@@ -321,6 +323,22 @@ export class PreviewViewer implements Component {
     this.redraw();
   }
 
+  // Numbering applies to text/code and Markdown source rows only — never to
+  // rendered Markdown, extracted PDF text, panels, the picker, or any image
+  // display (the imageMode guard also absorbs a stale focused image from
+  // batched input arriving between a source toggle and its repaint).
+  private get numbersEligible(): boolean {
+    return !this.panel && !this.picker && !this.imageMode()
+      && (this.document?.kind === "text" || (this.document?.kind === "markdown" && this.source));
+  }
+
+  private toggleNumbers(): void {
+    if (!this.numbersEligible) return;
+    this.numbers = !this.numbers;
+    queueLineNumbersSave(this.numbers);
+    this.redraw(true);
+  }
+
   handleInput(data: string): void {
     if (this.closed || isKeyRelease(data)) return;
     if (this.editor) { this.editor.input(data); return; }
@@ -363,7 +381,7 @@ export class PreviewViewer implements Component {
     }
     if (data === "e" && this.editable()) { this.startEditing(); return; }
     if (data === "s" && !this.panel && (this.document?.kind === "markdown" || this.document?.kind === "pdf")) {
-      this.source = !this.source; this.focusImage = undefined; this.offset = 0; this.clearFrames();
+      this.source = !this.source; this.focusImage = undefined; this.visibleImages = []; this.offset = 0; this.clearFrames();
       if (this.source && this.document.kind === "pdf" && this.pdfSource === undefined) void this.loadPdfText();
       this.redraw(true); return;
     }
@@ -389,7 +407,7 @@ export class PreviewViewer implements Component {
       this.focusImage = this.visibleImages[0]; this.resetZoom(); this.redraw(); return;
     }
     if (data === "w") { this.wrap = !this.wrap; this.horizontal = 0; this.redraw(true); return; }
-    if (data === "l") { this.numbers = !this.numbers; this.redraw(true); return; }
+    if (data === "l") { this.toggleNumbers(); return; }
     if (data === "n" || data === "N") { this.findMatch(data === "N" ? -1 : 1); return; }
     if (matchesKey(data, "up") || data === "k") this.offset--;
     else if (matchesKey(data, "down") || data === "j") this.offset++;
@@ -445,11 +463,12 @@ export class PreviewViewer implements Component {
     const language = this.document && getLanguageFromPath(this.document.path);
     const lines = code && text.length <= 100_000 ? highlightCode(text, language) : text.split("\n");
     const digits = String(lines.length).length;
+    const numbered = this.numbersEligible && this.numbers;
     const rows: string[] = [];
     const units: TextUnit[] = [];
     for (const [index, line] of lines.entries()) {
-      const prefix = this.numbers ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} │ `) : "";
-      const indent = this.numbers ? digits + 3 : 0;
+      const prefix = numbered ? this.theme.fg("dim", `${String(index + 1).padStart(digits)} │ `) : "";
+      const indent = numbered ? digits + 3 : 0;
       const contentWidth = Math.max(1, width - indent);
       const expanded = line.replace(/\t/g, "    ");
       const plain = stripVTControlCharacters(expanded);
