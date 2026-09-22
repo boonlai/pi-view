@@ -17,7 +17,7 @@ export type PreviewDocument =
   | { kind: "pdf"; path: string; pages: number };
 export interface RasterOptions {
   widthPx: number; heightPx: number; zoom: number; panX: number; panY: number;
-  actualSize?: boolean; cropTopPx?: number; cropHeightPx?: number;
+  actualSize?: boolean; withoutEnlargement?: boolean; cropTopPx?: number; cropHeightPx?: number;
 }
 const TEXT_LIMIT = 2 * 1024 * 1024;
 const IMAGE_LIMIT = 32 * 1024 * 1024;
@@ -236,7 +236,7 @@ async function remoteImage(url: string, signal?: AbortSignal): Promise<Buffer> {
 export async function loadImage(target: string, baseDir: string, allowRemote: boolean, signal?: AbortSignal): Promise<ImageSource> {
   let bytes: Buffer;
   if (/^https?:\/\//i.test(target)) {
-    if (!allowRemote) throw new Error("Remote image not fetched; press R to allow remote images for this preview");
+    if (!allowRemote) throw new Error("Remote image not fetched; press f to allow remote images for this preview");
     bytes = await remoteImage(target, signal);
   } else if (/^data:/i.test(target)) {
     const match = /^data:image\/(?:png|jpeg|gif|webp|svg\+xml);base64,([A-Za-z0-9+/=\s]+)$/i.exec(target);

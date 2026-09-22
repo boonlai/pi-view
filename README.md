@@ -45,7 +45,7 @@ After installing pi-view and the requirements above, Quick Open, path completion
 | PNG, JPEG, GIF, WebP | Zoom and pan in a graphics-capable terminal; GIFs are static |
 | SVG | Rasterized; external resources are rejected |
 
-Previews do not open HTML/webpages or execute scripts. Remote Markdown images stay blocked until you press **`R`**, then **`y`**—only allow URLs you trust.
+Previews do not open HTML/webpages or execute scripts. Remote Markdown images stay blocked until you press `f` (fetch), then `y` to confirm. Only allow URLs you trust; `r` remains reload.
 
 Image decoding is included; you do not need a separate image-conversion utility. See [inline graphics](#inline-graphics) for terminal requirements.
 
@@ -99,6 +99,8 @@ Press **`e`** while previewing a text, code, or Markdown file to edit the actual
 
 Inline images, Markdown images, and PDF page images need a graphics-capable terminal supported by your host. pi-view follows the host's detected image protocol; there is no extra image tool to install.
 
+Images embedded in Markdown keep their natural raster size, shrinking only to fit the available space. Small images such as badges do not expand to fill the preview. Press `i` or `Enter` to focus an image and use the zoom controls.
+
 Unsupported terminals fall back to image labels and PDF text. The PDF text fallback still requires Poppler. Use `/view --diagnostics` to inspect terminal and tool support, or set `PI_VIEW_IMAGES=off` before starting the host to force these fallbacks.
 
 ## Open a file
@@ -139,6 +141,7 @@ Use `ctrl`, `alt`, `shift`, or `super` (Cmd) with a key, such as `ctrl+alt+p`. T
 | Edit the file with embedded Neovim | `e` (text / Markdown previews) |
 | Toggle source line numbers (remembered) | `l` |
 | Focus a Markdown image / return | `Enter` or `i` / `b` |
+| Fetch remote Markdown images | `f`, then `y` to confirm |
 | Zoom; fit / actual raster size | `+` / `-`; `0` / `1` |
 | Pan a zoomed image or PDF | Arrows |
 | Turn PDF pages in image view | `[` / `]`, `PgUp` / `PgDn`, wheel |

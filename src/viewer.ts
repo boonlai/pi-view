@@ -7,7 +7,7 @@ import { getLanguageFromPath, getMarkdownTheme, highlightCode, type Theme } from
 import { Input, Markdown, isKeyRelease, matchesKey, parseKey, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import { listDirectory, MAX_LIST_ENTRIES, type FileEntry } from "./paths.ts";
 import { loadDocument, loadImage, loadPdfPage, mediaDiagnostics, pdfText, renderRaster, safeText, type ImageSource, type PreviewDocument } from "./documents.ts";
-import { attachMouse, capabilities, createTerminalImage, type TerminalImage } from "./host.ts";
+import { attachMouse, capabilities, createTerminalImage, type HostCapabilities, type TerminalImage } from "./host.ts";
 import { NvimEditor, type NvimEditingSession } from "./nvim.ts";
 import { flushLineNumbersSave, queueLineNumbersSave, readLineNumbers } from "./settings.ts";
 
@@ -74,7 +74,7 @@ b                          Return from an image/help/diagnostics
 Mouse wheel                Scroll text or change PDF pages; no image zoom
 g                          Jump to a PDF page
 r                          Reload (source file changes also reload)
-R                          Ask to load remote Markdown images
+f                          Ask to fetch remote Markdown images
 o                          Browse the current file's directory
 ? / d                      Help / diagnostics
 
@@ -124,6 +124,8 @@ export class PreviewViewer implements Component {
   private layout?: { key: string; blocks: LayoutBlock[]; search?: SearchState };
   private frames = new Map<string, Frame>();
   private images = new Map<string, LoadedImage>();
+  // Retain geometry after pixel-cache eviction so scrolling keeps block heights stable.
+  private imageDimensions = new Map<string, { width: number; height: number }>();
   private imageJobs: Promise<unknown> = Promise.resolve();
   private requestedImages = new Set<string>();
   private visibleImages: string[] = [];
@@ -176,6 +178,7 @@ export class PreviewViewer implements Component {
     this.detachMouse?.(); this.detachMouse = undefined;
     this.clearFrames();
     this.images.clear();
+    this.imageDimensions.clear();
   }
 
   private clearFrames(): void {
@@ -190,6 +193,7 @@ export class PreviewViewer implements Component {
     if (path !== this.path) this.stopWatching();
     this.clearFrames();
     this.images.clear();
+    this.imageDimensions.clear();
     this.loading = true;
     this.message = "";
     if (!this.watcher) this.watchPath(path);
@@ -368,7 +372,7 @@ export class PreviewViewer implements Component {
     }
     if (data === "r") { void this.open(this.path, true); return; }
     if (data === "o") { void this.open(this.picker?.directory ?? dirname(this.path)); return; }
-    if (data === "R" && this.document?.kind === "markdown") { this.remotePrompt = true; this.redraw(); return; }
+    if (data === "f" && this.document?.kind === "markdown") { this.remotePrompt = true; this.redraw(); return; }
     if (data === "/") { this.startInput(this.picker && !this.panel ? "filter" : "search"); return; }
     if (this.picker && !this.panel) {
       const entries = this.filteredEntries();
@@ -491,7 +495,8 @@ export class PreviewViewer implements Component {
   }
 
   private getLayout(width: number): { key: string; blocks: LayoutBlock[]; search?: SearchState } {
-    const key = `${width}|${this.bodyHeight}|${this.source}|${this.wrap}|${this.numbers}|${this.panel ?? ""}|${this.pdfSource ?? ""}`;
+    const cap = capabilities();
+    const key = `${width}|${this.bodyHeight}|${this.source}|${this.wrap}|${this.numbers}|${this.panel ?? ""}|${this.pdfSource ?? ""}|${cap.protocol}|${cap.cellWidth}|${cap.cellHeight}`;
     if (this.layout?.key === key) return this.layout;
     let blocks: LayoutBlock[] = [];
     if (this.panel) blocks = [{ kind: "text", ...this.textLines(this.panel, width) }];
@@ -501,7 +506,7 @@ export class PreviewViewer implements Component {
       theme.highlightCode = (code, lang) => code.length <= 100_000 && highlight ? highlight(code, lang) : code.split("\n");
       const renderWidth = this.wrap ? width : Math.min(4096, this.document.source.split("\n").reduce((max, line) => Math.max(max, visibleWidth(line)), width));
       blocks = this.document.blocks.map(block => block.kind === "image"
-        ? { kind: "image", target: block.target, alt: block.alt, rows: !capabilities().protocol || (!this.remoteAllowed && /^https?:\/\//i.test(block.target)) ? 1 : Math.max(2, Math.min(12, this.bodyHeight - 1)) }
+        ? { kind: "image", target: block.target, alt: block.alt, rows: this.inlineImageSize(block.target, width, cap).rows }
         : this.markdownBlock(new Markdown(block.text, 0, 0, theme).render(renderWidth), block.text));
     } else if (this.document?.kind === "text" || this.document?.kind === "markdown") {
       blocks = [{ kind: "text", ...this.textLines(this.document.source, width, true) }];
@@ -510,6 +515,22 @@ export class PreviewViewer implements Component {
     }
     this.layout = { key, blocks };
     return this.layout;
+  }
+
+  private inlineImageSize(target: string, width: number, cap: HostCapabilities): { widthPx: number; rows: number } {
+    const image = this.imageDimensions.get(target);
+    if (!image || !cap.protocol || width < 5 || (!this.remoteAllowed && /^https?:\/\//i.test(target))) {
+      return { widthPx: 1, rows: 1 };
+    }
+    const maxWidthPx = Math.min(4096, Math.max(1, Math.floor((width - 2) * cap.cellWidth)));
+    const maxRows = Math.max(1, Math.min(12, this.bodyHeight - 1));
+    const scale = Math.min(1, maxWidthPx / image.width, maxRows * cap.cellHeight / image.height);
+    const pixelWidth = Math.max(1, Math.round(image.width * scale));
+    const pixelHeight = Math.max(1, Math.round(image.height * scale));
+    return {
+      widthPx: Math.min(maxWidthPx, Math.floor(Math.ceil(pixelWidth / cap.cellWidth) * cap.cellWidth)),
+      rows: Math.max(1, Math.min(maxRows, Math.ceil(pixelHeight / cap.cellHeight))),
+    };
   }
 
   // Match source-derived text forward, preserving hard boundaries and the spaces
@@ -624,6 +645,13 @@ export class PreviewViewer implements Component {
     });
     source.promise = promise.then(image => {
       source.image = image; source.promise = undefined;
+      if (this.document?.kind === "markdown" && this.images.get(target) === source) {
+        const previous = this.imageDimensions.get(target);
+        if (previous?.width !== image.width || previous?.height !== image.height) {
+          this.imageDimensions.set(target, { width: image.width, height: image.height });
+          this.layout = undefined;
+        }
+      }
       // At most one source decoder runs, and only four decoded images are retained.
       const completed = [...this.images].filter(([, entry]) => entry.image);
       for (const [key] of completed.slice(0, Math.max(0, completed.length - 4))) this.images.delete(key);
@@ -657,11 +685,20 @@ export class PreviewViewer implements Component {
       const options = {
         widthPx: Math.max(1, Math.floor((width - 2) * cap.cellWidth)), heightPx: Math.max(1, Math.floor(fullRows * cap.cellHeight)),
         zoom: focused ? this.zoom : 1, actualSize: focused && this.actualSize,
+        withoutEnlargement: !focused,
         panX: focused ? this.panX : 0.5, panY: focused ? this.panY : 0.5,
         cropTopPx: Math.floor(top * cap.cellHeight), cropHeightPx: Math.max(1, Math.floor(rows * cap.cellHeight)),
       };
-      void this.getImage(target).then(image => renderRaster(image, options, signal)).then(png => {
-        if (signal.aborted || this.closed) return;
+      void this.getImage(target).then(image => {
+        if (!focused) {
+          const size = this.inlineImageSize(target, width, cap);
+          // Let the next layout reserve the measured height before rasterising.
+          if (size.rows !== fullRows) return;
+          options.widthPx = size.widthPx;
+        }
+        return renderRaster(image, options, signal);
+      }).then(png => {
+        if (!png || signal.aborted || this.closed) return;
         const component = createTerminalImage(png, width - 2, rows, label, this.tui);
         current.retired = current.component;
         current.component = component;

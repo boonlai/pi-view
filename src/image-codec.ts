@@ -48,7 +48,9 @@ export async function renderRaster(image: ImageSource, options: RasterOptions, s
     throw new Error("Preview viewport exceeds the raster size limit");
   }
   const zoom = Math.max(0.05, Math.min(32, Number.isFinite(options.zoom) ? options.zoom : 1));
-  const scale = (options.actualSize ? 1 : Math.min(widthPx / image.width, heightPx / image.height)) * zoom;
+  // The 0.05 floor guards user zoom only; fit may still shrink far below it.
+  const fit = options.actualSize ? 1 : Math.min(widthPx / image.width, heightPx / image.height);
+  const scale = (options.withoutEnlargement ? Math.min(1, fit) : fit) * zoom;
   const regionW = Math.min(image.width, Math.max(1, Math.ceil(widthPx / scale)));
   const regionH = Math.min(image.height, Math.max(1, Math.ceil(heightPx / scale)));
   const clampPan = (value: number) => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0.5;

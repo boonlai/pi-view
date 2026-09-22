@@ -272,6 +272,33 @@ test("Crop bands separate transparent letterbox rows from partial content rows",
   assert.deepEqual(await rows(0, 8), ["blank", "blank", "content", "content", "content", "content", "blank", "blank"]);
 });
 
+test("withoutEnlargement caps fit at native size yet still downscales oversized images", async t => {
+  const dir = await fixture(t);
+  const file = join(dir, "tiny.png");
+  await sharp({ create: { width: 8, height: 4, channels: 3, background: "red" } }).png().toFile(file);
+  const image = await loadImage(file, dir, false);
+  // An 8x4 image in a 16x8 viewport stays at 1:1, centred on transparent padding.
+  const native = await renderRaster(image, { widthPx: 16, heightPx: 8, zoom: 1, panX: 0.5, panY: 0.5, withoutEnlargement: true });
+  const raw = await sharp(native).ensureAlpha().raw().toBuffer();
+  const px = (x: number, y: number): number[] => [...raw.subarray((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)];
+  assert.deepEqual(px(0, 0), [0, 0, 0, 0]); // letterbox corner
+  assert.deepEqual(px(3, 2), [0, 0, 0, 0]); // left padding column
+  assert.deepEqual(px(4, 2), [255, 0, 0, 255]); // first native pixel
+  assert.deepEqual(px(11, 5), [255, 0, 0, 255]); // last native pixel
+  assert.deepEqual(px(12, 5), [0, 0, 0, 0]); // right padding column
+  // 400x200 into an 8x8 viewport still fits: the fit scale drops below the 0.05 user-zoom floor.
+  const wide = join(dir, "wide.png");
+  await sharp({ create: { width: 400, height: 200, channels: 3, background: "red" } }).png().toFile(wide);
+  const oversized = await loadImage(wide, dir, false);
+  const fitted = await sharp(await renderRaster(oversized, { widthPx: 8, heightPx: 8, zoom: 1, panX: 0.5, panY: 0.5, withoutEnlargement: true })).ensureAlpha().raw().toBuffer();
+  const rows = Array.from({ length: 8 }, (_, row) => fitted.subarray(row * 32, (row + 1) * 32).every(byte => byte === 0) ? "blank" : "content");
+  assert.deepEqual(rows, ["blank", "blank", "content", "content", "content", "content", "blank", "blank"]);
+  // Without the flag, fit still enlarges to fill the viewport.
+  const enlarged = await renderRaster(image, { widthPx: 16, heightPx: 8, zoom: 1, panX: 0.5, panY: 0.5 });
+  assert.equal((await sharp(enlarged).metadata()).width, 16);
+  assert.deepEqual([...(await sharp(enlarged).ensureAlpha().raw().toBuffer()).subarray(0, 4)], [255, 0, 0, 255]);
+});
+
 test("PDF renders a real page and extracts searchable text", async t => {
   const diagnostic = await mediaDiagnostics();
   if (diagnostic.filter(line => /^(pdfinfo|pdftoppm|pdftotext): available$/.test(line)).length < 3) { t.skip("Poppler is not installed"); return; }

@@ -319,10 +319,10 @@ function rawRender(viewer: PreviewViewer, width = 160): string {
   return viewer.render(width).join("\n");
 }
 
-async function rawScreen(viewer: PreviewViewer, predicate: (rendered: string) => boolean): Promise<string> {
+async function rawScreen(viewer: PreviewViewer, predicate: (rendered: string) => boolean, width = 160): Promise<string> {
   let rendered = "";
   for (let attempt = 0; attempt < 200; attempt++) {
-    rendered = rawRender(viewer);
+    rendered = rawRender(viewer, width);
     if (predicate(rendered)) return rendered;
     await delay(20);
   }
@@ -339,9 +339,13 @@ function frameIds(rendered: string): number[] {
     .filter(id => Number.isInteger(id));
 }
 
-async function framePixels(rendered: string): Promise<Buffer> {
+function framePng(rendered: string): Buffer {
   const data = [...rendered.matchAll(/\x1b_G[^;]*;([A-Za-z0-9+/=]+)(?=\x1b)/g)].map(match => match[1]).join("");
-  return sharp(Buffer.from(data, "base64")).ensureAlpha().raw().toBuffer();
+  return Buffer.from(data, "base64");
+}
+
+async function framePixels(rendered: string): Promise<Buffer> {
+  return sharp(framePng(rendered)).ensureAlpha().raw().toBuffer();
 }
 
 function deletedIds(writes: string[]): number[] {
@@ -405,18 +409,53 @@ test("Remote image approval loads the image and restores the normal footer", asy
   await screen(viewer, value => value.includes("not fetched"), 160);
   assert.equal(requests, 0, "opening the preview must not fetch remote images");
 
-  viewer.handleInput("R");
+  viewer.handleInput("f");
   rawRender(viewer);
   viewer.handleInput("n");
   rawRender(viewer);
   assert.equal(requests, 0, "declining consent must not start a request");
-  viewer.handleInput("R");
+  viewer.handleInput("f");
   rawRender(viewer);
   viewer.handleInput("y");
   const loaded = await rawScreen(viewer, rendered => frameIds(rendered).length === 1);
   assert.equal(requests, 1, "approval downloads the image once");
   assert.equal(stripVTControlCharacters(loaded).split("\n").at(-1), normalFooter,
     "successful loading must not leave the earlier refusal in the footer");
+});
+
+test("Inline badges retain native pixels and take only their measured space", async t => {
+  const { dir, viewer } = await setup(t, "badge.md", "# Gallery\n\n![Badge](badge.png)\n\nAfter image\n", { images: true });
+  await writeFile(join(dir, "badge.png"), await rasterPng(78, 20, "green"));
+  const loaded = await rawScreen(viewer, rendered => frameIds(rendered).length === 1);
+  const png = framePng(loaded);
+  const metadata = await sharp(png).metadata();
+  assert.equal(metadata.width, 80, "the badge occupies only its terminal columns");
+  assert.equal(metadata.height, 20, "the badge occupies one terminal row");
+  const content = await sharp(png).trim({ background: "#00000000" }).toBuffer({ resolveWithObject: true });
+  assert.equal(content.info.width, 78);
+  assert.equal(content.info.height, 20);
+  assert.match(stripVTControlCharacters(loaded), /After image/, "following text remains in the viewport");
+
+  const previousId = frameIds(loaded)[0];
+  const narrowed = await rawScreen(viewer, rendered => frameIds(rendered).length === 1 && frameIds(rendered)[0] !== previousId, 8);
+  const narrowedContent = await sharp(framePng(narrowed)).trim({ background: "#00000000" }).toBuffer({ resolveWithObject: true });
+  assert.equal(narrowedContent.info.width, 60, "oversized images shrink to the available width");
+  assert.equal(narrowedContent.info.height, 15, "shrinking preserves the aspect ratio");
+});
+
+test("Inline image heights survive decoded-image eviction and viewport resize", async t => {
+  const images = Array.from({ length: 5 }, (_, index) => `![Image](image${index}.png)`).join("\n\n");
+  const { dir, viewer, terminal } = await setup(t, "gallery.md", `# Gallery\n\n${images}\n\nAfter images\n`, { images: true });
+  terminal.rows = 40;
+  const png = await rasterPng(30, 60, "blue");
+  await Promise.all(Array.from({ length: 5 }, (_, index) => writeFile(join(dir, `image${index}.png`), png)));
+  const loaded = await rawScreen(viewer, rendered => frameIds(rendered).length === 5);
+  const afterRow = (rendered: string) => stripVTControlCharacters(rendered).split("\n").findIndex(line => line.includes("After images"));
+  const originalRow = afterRow(loaded);
+  assert.ok(originalRow >= 0, "all five images and following text fit");
+  assert.equal(afterRow(rawRender(viewer, 150)), originalRow, "evicted pixel buffers must not collapse document layout");
+  const resized = await rawScreen(viewer, rendered => frameIds(rendered).length === 5, 150);
+  assert.equal(afterRow(resized), originalRow);
 });
 
 test("Wheel never zooms a raster while plus, minus and reset still do", { timeout: 30_000 }, async t => {

@@ -3465,7 +3465,7 @@ async function remoteImage(url, signal) {
 async function loadImage(target, baseDir, allowRemote, signal) {
   let bytes;
   if (/^https?:\/\//i.test(target)) {
-    if (!allowRemote) throw new Error("Remote image not fetched; press R to allow remote images for this preview");
+    if (!allowRemote) throw new Error("Remote image not fetched; press f to allow remote images for this preview");
     bytes = await remoteImage(target, signal);
   } else if (/^data:/i.test(target)) {
     const match = /^data:image\/(?:png|jpeg|gif|webp|svg\+xml);base64,([A-Za-z0-9+/=\s]+)$/i.exec(target);
@@ -4934,7 +4934,7 @@ b                          Return from an image/help/diagnostics
 Mouse wheel                Scroll text or change PDF pages; no image zoom
 g                          Jump to a PDF page
 r                          Reload (source file changes also reload)
-R                          Ask to load remote Markdown images
+f                          Ask to fetch remote Markdown images
 o                          Browse the current file's directory
 ? / d                      Help / diagnostics
 
@@ -4999,6 +4999,8 @@ var PreviewViewer = class {
   layout;
   frames = /* @__PURE__ */ new Map();
   images = /* @__PURE__ */ new Map();
+  // Retain geometry after pixel-cache eviction so scrolling keeps block heights stable.
+  imageDimensions = /* @__PURE__ */ new Map();
   imageJobs = Promise.resolve();
   requestedImages = /* @__PURE__ */ new Set();
   visibleImages = [];
@@ -5049,6 +5051,7 @@ var PreviewViewer = class {
     this.detachMouse = void 0;
     this.clearFrames();
     this.images.clear();
+    this.imageDimensions.clear();
   }
   clearFrames() {
     for (const frame of this.frames.values()) {
@@ -5065,6 +5068,7 @@ var PreviewViewer = class {
     if (path3 !== this.path) this.stopWatching();
     this.clearFrames();
     this.images.clear();
+    this.imageDimensions.clear();
     this.loading = true;
     this.message = "";
     if (!this.watcher) this.watchPath(path3);
@@ -5311,7 +5315,7 @@ var PreviewViewer = class {
       void this.open(this.picker?.directory ?? dirname4(this.path));
       return;
     }
-    if (data === "R" && this.document?.kind === "markdown") {
+    if (data === "f" && this.document?.kind === "markdown") {
       this.remotePrompt = true;
       this.redraw();
       return;
@@ -5479,7 +5483,8 @@ var PreviewViewer = class {
     return { lines: rows, units };
   }
   getLayout(width) {
-    const key = `${width}|${this.bodyHeight}|${this.source}|${this.wrap}|${this.numbers}|${this.panel ?? ""}|${this.pdfSource ?? ""}`;
+    const cap = capabilities();
+    const key = `${width}|${this.bodyHeight}|${this.source}|${this.wrap}|${this.numbers}|${this.panel ?? ""}|${this.pdfSource ?? ""}|${cap.protocol}|${cap.cellWidth}|${cap.cellHeight}`;
     if (this.layout?.key === key) return this.layout;
     let blocks = [];
     if (this.panel) blocks = [{ kind: "text", ...this.textLines(this.panel, width) }];
@@ -5488,7 +5493,7 @@ var PreviewViewer = class {
       const highlight = theme.highlightCode;
       theme.highlightCode = (code, lang) => code.length <= 1e5 && highlight ? highlight(code, lang) : code.split("\n");
       const renderWidth = this.wrap ? width : Math.min(4096, this.document.source.split("\n").reduce((max, line) => Math.max(max, visibleWidth2(line)), width));
-      blocks = this.document.blocks.map((block) => block.kind === "image" ? { kind: "image", target: block.target, alt: block.alt, rows: !capabilities().protocol || !this.remoteAllowed && /^https?:\/\//i.test(block.target) ? 1 : Math.max(2, Math.min(12, this.bodyHeight - 1)) } : this.markdownBlock(new Markdown(block.text, 0, 0, theme).render(renderWidth), block.text));
+      blocks = this.document.blocks.map((block) => block.kind === "image" ? { kind: "image", target: block.target, alt: block.alt, rows: this.inlineImageSize(block.target, width, cap).rows } : this.markdownBlock(new Markdown(block.text, 0, 0, theme).render(renderWidth), block.text));
     } else if (this.document?.kind === "text" || this.document?.kind === "markdown") {
       blocks = [{ kind: "text", ...this.textLines(this.document.source, width, true) }];
     } else if (this.document?.kind === "pdf" && this.source) {
@@ -5496,6 +5501,21 @@ var PreviewViewer = class {
     }
     this.layout = { key, blocks };
     return this.layout;
+  }
+  inlineImageSize(target, width, cap) {
+    const image = this.imageDimensions.get(target);
+    if (!image || !cap.protocol || width < 5 || !this.remoteAllowed && /^https?:\/\//i.test(target)) {
+      return { widthPx: 1, rows: 1 };
+    }
+    const maxWidthPx = Math.min(4096, Math.max(1, Math.floor((width - 2) * cap.cellWidth)));
+    const maxRows = Math.max(1, Math.min(12, this.bodyHeight - 1));
+    const scale = Math.min(1, maxWidthPx / image.width, maxRows * cap.cellHeight / image.height);
+    const pixelWidth = Math.max(1, Math.round(image.width * scale));
+    const pixelHeight = Math.max(1, Math.round(image.height * scale));
+    return {
+      widthPx: Math.min(maxWidthPx, Math.floor(Math.ceil(pixelWidth / cap.cellWidth) * cap.cellWidth)),
+      rows: Math.max(1, Math.min(maxRows, Math.ceil(pixelHeight / cap.cellHeight)))
+    };
   }
   // Match source-derived text forward, preserving hard boundaries and the spaces
   // dropped by wrapping.
@@ -5616,6 +5636,13 @@ var PreviewViewer = class {
     source.promise = promise.then((image) => {
       source.image = image;
       source.promise = void 0;
+      if (this.document?.kind === "markdown" && this.images.get(target) === source) {
+        const previous = this.imageDimensions.get(target);
+        if (previous?.width !== image.width || previous?.height !== image.height) {
+          this.imageDimensions.set(target, { width: image.width, height: image.height });
+          this.layout = void 0;
+        }
+      }
       const completed = [...this.images].filter(([, entry2]) => entry2.image);
       for (const [key] of completed.slice(0, Math.max(0, completed.length - 4))) this.images.delete(key);
       return image;
@@ -5652,13 +5679,21 @@ var PreviewViewer = class {
         heightPx: Math.max(1, Math.floor(fullRows * cap.cellHeight)),
         zoom: focused ? this.zoom : 1,
         actualSize: focused && this.actualSize,
+        withoutEnlargement: !focused,
         panX: focused ? this.panX : 0.5,
         panY: focused ? this.panY : 0.5,
         cropTopPx: Math.floor(top * cap.cellHeight),
         cropHeightPx: Math.max(1, Math.floor(rows * cap.cellHeight))
       };
-      void this.getImage(target).then((image) => renderRaster(image, options, signal)).then((png) => {
-        if (signal.aborted || this.closed) return;
+      void this.getImage(target).then((image) => {
+        if (!focused) {
+          const size = this.inlineImageSize(target, width, cap);
+          if (size.rows !== fullRows) return;
+          options.widthPx = size.widthPx;
+        }
+        return renderRaster(image, options, signal);
+      }).then((png) => {
+        if (!png || signal.aborted || this.closed) return;
         const component = createTerminalImage(png, width - 2, rows, label, this.tui);
         current.retired = current.component;
         current.component = component;
