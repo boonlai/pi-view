@@ -2071,24 +2071,21 @@ function parseMouseStream(buffer, state) {
     }
     const sgr = SGR_MOUSE.exec(slice);
     if (sgr) {
-      const button = Number(sgr[1]);
-      const delta = wheelDelta(button);
-      events.push(delta !== null ? { kind: "wheel", delta } : sgr[4] === "M" && button === 0 ? { kind: "click", x: Number(sgr[2]) - 1, y: Number(sgr[3]) - 1 } : { kind: "noise" });
+      const delta = wheelDelta(Number(sgr[1]));
+      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
       pos += sgr[0].length;
       continue;
     }
     if (slice.startsWith(X10_MOUSE_PREFIX) && slice.length >= 6) {
-      const button = slice.charCodeAt(3) - 32;
-      const delta = wheelDelta(button);
-      events.push(delta !== null ? { kind: "wheel", delta } : button === 0 ? { kind: "click", x: slice.charCodeAt(4) - 33, y: slice.charCodeAt(5) - 33 } : { kind: "noise" });
+      const delta = wheelDelta(slice.charCodeAt(3) - 32);
+      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
       pos += 6;
       continue;
     }
     const urxvt = URXVT_MOUSE.exec(slice);
     if (urxvt) {
-      const button = Number(urxvt[1]) - 32;
-      const delta = wheelDelta(button);
-      events.push(delta !== null ? { kind: "wheel", delta } : button === 0 ? { kind: "click", x: Number(urxvt[2]) - 1, y: Number(urxvt[3]) - 1 } : { kind: "noise" });
+      const delta = wheelDelta(Number(urxvt[1]) - 32);
+      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
       pos += urxvt[0].length;
       continue;
     }
@@ -2103,7 +2100,7 @@ function parseMouseStream(buffer, state) {
   }
   return { events, rest, held: "" };
 }
-function attachMouse(tui, onWheel, onClick) {
+function attachMouse(tui, onWheel) {
   if (typeof tui.addInputListener !== "function") return () => {
   };
   const hostOwnsMouse = ompTerminal() !== void 0;
@@ -2131,8 +2128,6 @@ function attachMouse(tui, onWheel, onClick) {
         }
       } else if (event.kind === "wheel") {
         onWheel(event.delta);
-      } else if (event.kind === "click" && onClick) {
-        onClick(event.x, event.y);
       }
     }
     if (!state.held && rest === data) return;
@@ -2301,7 +2296,7 @@ var PreviewViewer = class {
     this.done = done;
     this.onOpen = onOpen;
     this.path = path3;
-    this.detachMouse = attachMouse(tui, (delta) => this.wheel(delta), (column, row) => this.click(column, row));
+    this.detachMouse = attachMouse(tui, (delta) => this.wheel(delta));
     this.input.onSubmit = (value) => this.submitInput(value);
     if (initial === "help") this.panel = HELP;
     else if (initial === "diagnostics") void this.showDiagnostics();
@@ -2329,7 +2324,6 @@ var PreviewViewer = class {
   totalRows = 0;
   wrap = true;
   numbers = readLineNumbers();
-  linesChip;
   source = false;
   page = 1;
   pageWheelAt = 0;
@@ -2365,7 +2359,7 @@ var PreviewViewer = class {
     if (!value) {
       this.detachMouse?.();
       this.detachMouse = void 0;
-    } else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, (delta) => this.wheel(delta), (column, row) => this.click(column, row));
+    } else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, (delta) => this.wheel(delta));
   }
   redraw(clearLayout = false) {
     if (clearLayout) {
@@ -2531,11 +2525,6 @@ var PreviewViewer = class {
     this.numbers = !this.numbers;
     queueLineNumbersSave(this.numbers);
     this.redraw(true);
-  }
-  click(column, row) {
-    if (this.closed || this.inputMode || this.remotePrompt) return;
-    const chip = this.linesChip;
-    if (chip && row === chip.row && column >= 0 && column < chip.end) this.toggleNumbers();
   }
   handleInput(data) {
     if (this.closed || isKeyRelease(data)) return;
@@ -2967,7 +2956,6 @@ var PreviewViewer = class {
   }
   render(width) {
     width = Math.max(1, width);
-    this.linesChip = void 0;
     if (this.tui.terminal.rows < 6) return [truncateToWidth("pi-view \xB7 enlarge terminal \xB7 Esc: close", width)];
     this.requestedImages.clear();
     this.width = Math.max(1, width);
@@ -3041,22 +3029,12 @@ var PreviewViewer = class {
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
     let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : "\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
-    let statusLine = status.replace(/[\n\t]/g, " ");
-    if (!this.inputMode && !this.remotePrompt && !this.message) {
-      if (this.numbersEligible) {
-        const chip = `[l Lines: ${this.numbers ? "on" : "off"}]`;
-        this.linesChip = { row: this.bodyHeight + 3, end: visibleWidth(chip) };
-        statusLine = `${this.theme.fg("accent", chip)} \xB7 ${statusLine}`;
-      } else if (!this.imageMode() && this.document?.kind === "markdown" && !this.source && !this.panel) {
-        statusLine = `${this.theme.fg("muted", "Lines: s source")} \xB7 ${statusLine}`;
-      }
-    }
     return [
       this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)),
       this.theme.fg("borderMuted", "\u2500".repeat(width)),
       ...body.slice(0, this.bodyHeight),
       this.theme.fg("borderMuted", "\u2500".repeat(width)),
-      truncateToWidth(statusLine, width)
+      truncateToWidth(status.replace(/[\n\t]/g, " "), width)
     ];
   }
 };

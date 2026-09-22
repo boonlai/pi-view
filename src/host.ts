@@ -334,7 +334,6 @@ const PROBED_MODES: readonly number[] = [1000, 1002, 1003, 1006];
 
 type ParsedInput =
   | { kind: "wheel"; delta: number }
-  | { kind: "click"; x: number; y: number }
   | { kind: "noise" }
   | { kind: "decrpm"; mode: number; value: number };
 
@@ -362,7 +361,7 @@ function probeTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 /**
  * Incrementally parse raw stdin. Complete mouse packets (SGR / X10 / urxvt)
- * become wheel, click or noise events; DECRPM replies are captured while probing.
+ * become wheel or noise events; DECRPM replies are captured while probing.
  * The TUI's stdin buffer normally delivers sequence-aligned chunks, so the
  * hold-back path only guards against a flushed partial packet. A lone ESC is
  * always passed through so Escape key handling stays intact.
@@ -396,31 +395,21 @@ function parseMouseStream(
     }
     const sgr = SGR_MOUSE.exec(slice);
     if (sgr) {
-      const button = Number(sgr[1]);
-      const delta = wheelDelta(button);
-      events.push(delta !== null ? { kind: "wheel", delta }
-        : sgr[4] === "M" && button === 0 ? { kind: "click", x: Number(sgr[2]) - 1, y: Number(sgr[3]) - 1 }
-        : { kind: "noise" });
+      const delta = wheelDelta(Number(sgr[1]));
+      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
       pos += sgr[0].length;
       continue;
     }
     if (slice.startsWith(X10_MOUSE_PREFIX) && slice.length >= 6) {
-      const button = slice.charCodeAt(3) - 32;
-      const delta = wheelDelta(button);
-      events.push(delta !== null ? { kind: "wheel", delta }
-        // X10 carries no event subtype; a release is encoded as button 3.
-        : button === 0 ? { kind: "click", x: slice.charCodeAt(4) - 33, y: slice.charCodeAt(5) - 33 }
-        : { kind: "noise" });
+      const delta = wheelDelta(slice.charCodeAt(3) - 32);
+      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
       pos += 6;
       continue;
     }
     const urxvt = URXVT_MOUSE.exec(slice);
     if (urxvt) {
-      const button = Number(urxvt[1]) - 32;
-      const delta = wheelDelta(button);
-      events.push(delta !== null ? { kind: "wheel", delta }
-        : button === 0 ? { kind: "click", x: Number(urxvt[2]) - 1, y: Number(urxvt[3]) - 1 }
-        : { kind: "noise" });
+      const delta = wheelDelta(Number(urxvt[1]) - 32);
+      events.push(delta === null ? { kind: "noise" } : { kind: "wheel", delta });
       pos += urxvt[0].length;
       continue;
     }
@@ -445,21 +434,20 @@ function parseMouseStream(
 }
 
 /**
- * Capture mouse wheel and primary-button click input for the active overlay via
- * the TUI's raw input listener (identical behavior on Pi and OMP; the
- * normalized `handleMouse` dispatch is not portable between hosts).
+ * Capture mouse wheel input for the active overlay via the TUI's raw input
+ * listener (identical behavior on Pi and OMP; the normalized `handleMouse`
+ * dispatch is not portable between hosts).
  *
  * - OMP owns mouse modes through its fullscreen overlays. Pi queries mode state
  *   before changing it, and only modes changed by this overlay are restored.
  * - Without probe support, leaves terminal modes untouched (keyboard fallback).
  * - Wheel packets invoke `onWheel(delta)` (logical lines, negative = up);
- *   a primary-button press invokes `onClick(column, row)` (0-based) when
- *   provided. Press/release/motion packets are consumed as noise; every other
- *   byte passes through, so normal keyboard data is never consumed.
+ *   press/release/motion packets are consumed as noise; every other byte
+ *   passes through, so normal keyboard data is never consumed.
  *
  * Returns an idempotent detach function restoring terminal state.
  */
-export function attachMouse(tui: TUI, onWheel: (delta: number) => void, onClick?: (column: number, row: number) => void): () => void {
+export function attachMouse(tui: TUI, onWheel: (delta: number) => void): () => void {
   if (typeof tui.addInputListener !== "function") return () => {};
   // OMP consumes DECRPM replies before raw listeners; its TUI owns the modes.
   const hostOwnsMouse = ompTerminal() !== undefined;
@@ -490,8 +478,6 @@ export function attachMouse(tui: TUI, onWheel: (delta: number) => void, onClick?
         }
       } else if (event.kind === "wheel") {
         onWheel(event.delta);
-      } else if (event.kind === "click" && onClick) {
-        onClick(event.x, event.y);
       }
     }
     if (!state.held && rest === data) return;

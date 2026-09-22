@@ -105,7 +105,6 @@ export class PreviewViewer implements Component {
   private totalRows = 0;
   private wrap = true;
   private numbers = readLineNumbers();
-  private linesChip?: { row: number; end: number };
   private source = false;
   private page = 1;
   private pageWheelAt = 0;
@@ -135,7 +134,7 @@ export class PreviewViewer implements Component {
 
   constructor(private tui: TUI, private theme: Theme, private done: () => void, path: string, initial?: "help" | "diagnostics", private onOpen?: (path: string) => void) {
     this.path = path;
-    this.detachMouse = attachMouse(tui, delta => this.wheel(delta), (column, row) => this.click(column, row));
+    this.detachMouse = attachMouse(tui, delta => this.wheel(delta));
     this.input.onSubmit = value => this.submitInput(value);
     if (initial === "help") this.panel = HELP;
     else if (initial === "diagnostics") void this.showDiagnostics();
@@ -146,7 +145,7 @@ export class PreviewViewer implements Component {
   set focused(value: boolean) {
     this._focused = value; this.input.focused = value && !!this.inputMode;
     if (!value) { this.detachMouse?.(); this.detachMouse = undefined; }
-    else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, delta => this.wheel(delta), (column, row) => this.click(column, row));
+    else if (!this.closed && !this.detachMouse) this.detachMouse = attachMouse(this.tui, delta => this.wheel(delta));
   }
 
   private redraw(clearLayout = false): void {
@@ -300,12 +299,6 @@ export class PreviewViewer implements Component {
     this.numbers = !this.numbers;
     queueLineNumbersSave(this.numbers);
     this.redraw(true);
-  }
-
-  click(column: number, row: number): void {
-    if (this.closed || this.inputMode || this.remotePrompt) return;
-    const chip = this.linesChip;
-    if (chip && row === chip.row && column >= 0 && column < chip.end) this.toggleNumbers();
   }
 
   handleInput(data: string): void {
@@ -660,7 +653,6 @@ export class PreviewViewer implements Component {
 
   render(width: number): string[] {
     width = Math.max(1, width);
-    this.linesChip = undefined;
     if (this.tui.terminal.rows < 6) return [truncateToWidth("pi-view · enlarge terminal · Esc: close", width)];
     this.requestedImages.clear();
     this.width = Math.max(1, width);
@@ -729,17 +721,7 @@ export class PreviewViewer implements Component {
       : this.picker && !this.panel ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
       : "↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close");
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
-    let statusLine = status.replace(/[\n\t]/g, " ");
-    if (!this.inputMode && !this.remotePrompt && !this.message) {
-      if (this.numbersEligible) {
-        const chip = `[l Lines: ${this.numbers ? "on" : "off"}]`;
-        this.linesChip = { row: this.bodyHeight + 3, end: visibleWidth(chip) };
-        statusLine = `${this.theme.fg("accent", chip)} · ${statusLine}`;
-      } else if (!this.imageMode() && this.document?.kind === "markdown" && !this.source && !this.panel) {
-        statusLine = `${this.theme.fg("muted", "Lines: s source")} · ${statusLine}`;
-      }
-    }
     return [this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)), this.theme.fg("borderMuted", "─".repeat(width)),
-      ...body.slice(0, this.bodyHeight), this.theme.fg("borderMuted", "─".repeat(width)), truncateToWidth(statusLine, width)];
+      ...body.slice(0, this.bodyHeight), this.theme.fg("borderMuted", "─".repeat(width)), truncateToWidth(status.replace(/[\n\t]/g, " "), width)];
   }
 }
