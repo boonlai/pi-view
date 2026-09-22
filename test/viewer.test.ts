@@ -10,12 +10,14 @@ import { getThemeByName } from "../node_modules/@earendil-works/pi-coding-agent/
 import { getCellDimensions, resetCapabilitiesCache, setCapabilityOverrides, setCellDimensions, visibleWidth, type TUI, type TuiInputListener } from "@earendil-works/pi-tui";
 import sharp from "sharp";
 import { PreviewViewer } from "../src/viewer.ts";
+import { resetStateFile, setStateFile } from "../src/settings.ts";
 import { mediaDiagnostics } from "../src/documents.ts";
 
 initTheme("dark", false);
 const theme = getThemeByName("dark")!;
 async function setup(t: { after(fn: () => void | Promise<void>): void }, filename?: string, content?: string | Buffer, options?: { images?: boolean }) {
   const dir = await mkdtemp(join(tmpdir(), "pi-view-ui-test-"));
+  setStateFile(join(dir, "settings.json"));
   const previous = process.env.PI_VIEW_IMAGES;
   process.env.PI_VIEW_IMAGES = options?.images ? "auto" : "off";
   const previousCell = getCellDimensions();
@@ -37,6 +39,7 @@ async function setup(t: { after(fn: () => void | Promise<void>): void }, filenam
   viewer.focused = true;
   t.after(async () => {
     viewer.dispose();
+    resetStateFile();
     if (previous === undefined) delete process.env.PI_VIEW_IMAGES; else process.env.PI_VIEW_IMAGES = previous;
     if (options?.images) { setCapabilityOverrides({}); resetCapabilitiesCache(); setCellDimensions(previousCell); }
     await rm(dir, { recursive: true, force: true });

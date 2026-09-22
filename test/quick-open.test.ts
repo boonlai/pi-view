@@ -82,9 +82,14 @@ test("Enter opens typed relative and absolute paths, including spaces", async t 
 
 test("Home-relative input resolves through the same path completer", async t => {
   const { dir, quick, result } = await fixture(t);
-  const previous = process.env.HOME;
+  const previousHome = process.env.HOME;
+  const previousUserprofile = process.env.USERPROFILE;
   process.env.HOME = dir;
-  t.after(() => { if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous; });
+  process.env.USERPROFILE = dir; // Windows: os.homedir() reads USERPROFILE, not HOME
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    if (previousUserprofile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserprofile;
+  });
   await writeFile(join(dir, "home.txt"), "fixture");
   type(quick, "~/ho"); quick.handleInput("\t");
   quick.handleInput("\r"); await selected(result);
