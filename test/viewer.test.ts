@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -378,6 +379,45 @@ function multiPagePdf(labels: string[]): Buffer {
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf);
 }
+
+test("Remote image approval loads the image and restores the normal footer", async t => {
+  const png = await rasterPng(40, 20, "green");
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.writeHead(200, { "Content-Type": "image/png" });
+    response.end(png);
+  });
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.closeAllConnections();
+    server.close(error => error ? reject(error) : resolve());
+  }));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const url = `http://127.0.0.1:${address.port}/image.png`;
+  const { viewer } = await setup(t, "gallery.md", `# Gallery\n\n![Remote](${url})\n`, { images: true });
+  const initial = await rawScreen(viewer, rendered => stripVTControlCharacters(rendered).includes("Gallery"));
+  const normalFooter = stripVTControlCharacters(initial).split("\n").at(-1);
+  await screen(viewer, value => value.includes("not fetched"), 160);
+  assert.equal(requests, 0, "opening the preview must not fetch remote images");
+
+  viewer.handleInput("R");
+  rawRender(viewer);
+  viewer.handleInput("n");
+  rawRender(viewer);
+  assert.equal(requests, 0, "declining consent must not start a request");
+  viewer.handleInput("R");
+  rawRender(viewer);
+  viewer.handleInput("y");
+  const loaded = await rawScreen(viewer, rendered => frameIds(rendered).length === 1);
+  assert.equal(requests, 1, "approval downloads the image once");
+  assert.equal(stripVTControlCharacters(loaded).split("\n").at(-1), normalFooter,
+    "successful loading must not leave the earlier refusal in the footer");
+});
 
 test("Wheel never zooms a raster while plus, minus and reset still do", { timeout: 30_000 }, async t => {
   const { viewer, writes, listeners } = await setup(t, "photo.png", await rasterPng(60, 40, "red"), { images: true });

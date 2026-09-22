@@ -353,7 +353,8 @@ export class PreviewViewer implements Component {
     if (this.remotePrompt) {
       this.remotePrompt = false;
       if (data.toLowerCase() === "y") {
-        this.remoteAllowed = true; this.images.clear(); this.clearFrames(); this.redraw(true);
+        this.remoteAllowed = true; this.message = "";
+        this.images.clear(); this.clearFrames(); this.redraw(true);
       } else this.redraw();
       return;
     }

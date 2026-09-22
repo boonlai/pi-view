@@ -5271,6 +5271,7 @@ var PreviewViewer = class {
       this.remotePrompt = false;
       if (data.toLowerCase() === "y") {
         this.remoteAllowed = true;
+        this.message = "";
         this.images.clear();
         this.clearFrames();
         this.redraw(true);
