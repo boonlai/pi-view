@@ -45,6 +45,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-tui": "0.85.1",
+    "@msgpack/msgpack": "^3.1.3",
     "@types/node": "^22.0.0",
     "esbuild": "^0.28.2",
     "marked": "^18.0.5",
