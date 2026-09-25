@@ -49,8 +49,6 @@ pi install npm:@boonlai/pi-view
 omp plugin install @boonlai/pi-view
 ```
 
-If you previously installed from Git, [remove that installation](#update-disable-or-remove) before switching to npm to avoid loading two copies.
-
 Restart your agent, then open a file:
 
 ```text
