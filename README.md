@@ -2,11 +2,36 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
+Press **Meta+P (Cmd+P on macOS) or Ctrl+P on Windows** to open Quick Open.
+
 Preview Markdown, code, images, and PDFs inside [Pi](https://pi.dev) and [Oh My Pi](https://github.com/can1357/oh-my-pi). Opening a preview does not add the file's contents to the model context.
 
 Use Quick Open to find session files, search text, and inspect images without leaving your agent. Previews refresh when files change. Optional Neovim support lets you edit text and Markdown in place.
 
-> Video demo: coming soon.
+[![Quick Open showing path completion and a selected image file](docs/assets/screenshots/quick-open.png)](docs/assets/screenshots/quick-open.png)
+
+Quick Open completes paths and opens files without leaving your session. Select a screenshot to view it at full size.
+
+<details>
+<summary>See Markdown, code, image, and PDF previews</summary>
+
+### Markdown
+
+[![Rendered Markdown preview with headings, links, code blocks, and keyboard controls](docs/assets/screenshots/markdown.png)](docs/assets/screenshots/markdown.png)
+
+### Code
+
+[![TypeScript preview with syntax highlighting and source line numbers](docs/assets/screenshots/code.png)](docs/assets/screenshots/code.png)
+
+### Images
+
+[![Image preview fitted to the terminal with zoom and pan controls](docs/assets/screenshots/image.png)](docs/assets/screenshots/image.png)
+
+### PDFs
+
+[![PDF page preview with page count, zoom, and navigation controls](docs/assets/screenshots/pdf.png)](docs/assets/screenshots/pdf.png)
+
+</details>
 
 [Quick start](#quick-start) · [Formats](#what-you-can-view) · [Keys](#keyboard-controls) · [Optional support](#optional-support) · [Troubleshooting](#troubleshooting)
 
