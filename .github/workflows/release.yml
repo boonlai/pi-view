@@ -55,11 +55,17 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - name: Install Node and configure npm registry
+      - name: Install Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22.22.0"
-          registry-url: https://registry.npmjs.org
+          node-version: "22.22.2"
+          package-manager-cache: false
+      - name: Install npm for trusted publishing
+        run: |
+          npm install --global npm@12.1.0
+          npm_version="$(npm --version)"
+          test "$npm_version" = "12.1.0"
+          echo "npm $npm_version"
       - name: Download tested archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -84,9 +90,8 @@ jobs:
           echo "checksum=${checksums[0]}" >> "$GITHUB_OUTPUT"
       - name: Publish tested archive
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           ARCHIVE: ${{ steps.archive.outputs.tarball }}
-        run: npm publish "$ARCHIVE" --provenance --access public
+        run: npm publish "$ARCHIVE" --registry=https://registry.npmjs.org --provenance --access public
       - name: Create GitHub release with tested assets
         env:
           GH_REPO: ${{ github.repository }}
