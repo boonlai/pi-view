@@ -11,7 +11,7 @@ const sha = process.env.GITHUB_SHA;
 
 assert.equal(repo, "boonlai/pi-view", "releases are restricted to the upstream repository");
 assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, "package version must be stable SemVer");
-assert.equal(pkg.name, "pi-view");
+assert.equal(pkg.name, "@boonlai/pi-view");
 assert.equal(pkg.private, false, "the package must be explicitly public");
 assert.equal(pkg.publishConfig?.access, "public");
 assert.equal(pkg.repository?.url, `git+https://github.com/${repo}.git`);

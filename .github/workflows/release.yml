@@ -88,10 +88,43 @@ jobs:
           (cd "$dir" && sha256sum --check -- "$archive_name.sha256")
           echo "tarball=${archives[0]}" >> "$GITHUB_OUTPUT"
           echo "checksum=${checksums[0]}" >> "$GITHUB_OUTPUT"
-      - name: Publish tested archive
+      - name: Check existing npm version
+        id: published
         env:
           ARCHIVE: ${{ steps.archive.outputs.tarball }}
-        run: npm publish "$ARCHIVE" --registry=https://registry.npmjs.org --provenance --access public
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { basename } from "node:path";
+
+          const archive = process.env.ARCHIVE;
+          const pkg = JSON.parse(execFileSync("tar", ["-xOzf", archive, "package/package.json"], { encoding: "utf8" }));
+          assert.equal(pkg.name, "@boonlai/pi-view");
+          assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+          assert.equal(basename(archive), `boonlai-pi-view-${pkg.version}.tgz`);
+          const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
+          const url = `https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(pkg.version)}`;
+          const response = await fetch(url);
+          if (response.status === 404) {
+            appendFileSync(process.env.GITHUB_OUTPUT, "already-published=false\n");
+          } else if (response.status === 200) {
+            const metadata = await response.json();
+            assert.equal(metadata.name, pkg.name);
+            assert.equal(metadata.version, pkg.version);
+            assert.equal(metadata.dist?.integrity, integrity, "published version differs from the tested archive");
+            appendFileSync(process.env.GITHUB_OUTPUT, "already-published=true\n");
+          } else {
+            throw new Error(`npm registry lookup failed (HTTP ${response.status})`);
+          }
+          NODE
+      - name: Publish tested archive
+        if: steps.published.outputs.already-published == 'false'
+        env:
+          ARCHIVE: ${{ steps.archive.outputs.tarball }}
+        run: npm publish "$ARCHIVE" --registry=https://registry.npmjs.org --access public
       - name: Create GitHub release with tested assets
         env:
           GH_REPO: ${{ github.repository }}

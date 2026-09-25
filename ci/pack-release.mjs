@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+assert.equal(pkg.name, "@boonlai/pi-view");
 const allowed = ["package.json", "README.md", "LICENSE", "dist/index.js", "dist/image-worker.mjs"].sort();
 const output = join(process.env.RUNNER_TEMP ?? tmpdir(), "pi-view-release");
 mkdirSync(output);
@@ -17,7 +18,7 @@ try {
   const { filename, name, version, files } = packed[0];
   assert.equal(name, pkg.name);
   assert.equal(version, pkg.version);
-  assert.equal(filename, `${name}-${version}.tgz`);
+  assert.equal(filename, `${name.slice(1).replace("/", "-")}-${version}.tgz`);
   assert.deepEqual(files.map(file => file.path).sort(), allowed, "npm package contains unexpected or missing files");
   const archive = join(output, filename);
   const entries = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).trim().split("\n");

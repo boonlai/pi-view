@@ -16,7 +16,7 @@ test("distributed image worker runs under node_modules with plain Node", { timeo
     }
     await rm(dir, { recursive: true, force: true });
   });
-  const installed = join(dir, "node_modules", "pi-view");
+  const installed = join(dir, "node_modules", "@boonlai", "pi-view");
   await mkdir(installed, { recursive: true });
   await cp(new URL("../dist/", import.meta.url), join(installed, "dist"), { recursive: true });
   await cp(new URL("../package.json", import.meta.url), join(installed, "package.json"));
