@@ -1,6 +1,6 @@
 {
-  "name": "pi-view",
-  "version": "0.3.0",
+  "name": "@boonlai/pi-view",
+  "version": "0.3.1",
   "private": false,
   "license": "MIT",
   "repository": {
