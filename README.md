@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 
-Press **Meta+P (Cmd+P on macOS) or Ctrl+P on Windows** to open Quick Open.
+Press **Cmd+P on macOS, Ctrl+P on Windows, or Super+P on Linux** to open Quick Open.
 
 Preview Markdown, code, images, and PDFs inside [Pi](https://pi.dev) and [Oh My Pi](https://github.com/can1357/oh-my-pi). Opening a preview does not add the file's contents to the model context.
 
