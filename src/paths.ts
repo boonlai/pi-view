@@ -112,11 +112,12 @@ export function completePath(args: string, cwd: string): AutocompleteItem[] | nu
 	}
 
 	const showHidden = base.startsWith(".");
+	const foldedBase = base.toLowerCase();
 	const head = sep === -1 ? (tilde ? "~/" : dirLogical) : logical.slice(0, sep + 1);
 	const rows: { name: string; directory: boolean; value: string; label: string }[] = [];
 	for (const d of dirents) {
 		if (/[\x00-\x1f\x7f-\x9f]/.test(d.name)) continue;
-		if (!d.name.startsWith(base)) continue;
+		if (!d.name.toLowerCase().startsWith(foldedBase)) continue;
 		if (!showHidden && d.name.startsWith(".")) continue;
 		let directory = d.isDirectory();
 		if (!directory && d.isSymbolicLink()) {

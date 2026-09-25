@@ -69,6 +69,25 @@ test("Typing produces matching paths; Tab descends directories and arrows choose
   assert.equal(result[0], join(dir, "sub/file-2.md"));
 });
 
+test("Quick Open matches mixed-case paths and opens the original spelling", async t => {
+  const { dir, quick, result } = await fixture(t);
+  await mkdir(join(dir, "My Docs"));
+  const path = join(dir, "My Docs", "Résumé.MD");
+  await writeFile(path, "fixture");
+  await writeFile(join(dir, "My Docs", "other.txt"), "fixture");
+
+  type(quick, "mY d");
+  assert.match(screen(quick), /My Docs\//);
+  quick.handleInput("\t");
+  type(quick, "rÉ");
+  assert.match(screen(quick), /Résumé\.MD/);
+  assert.doesNotMatch(screen(quick), /other\.txt/);
+  quick.handleInput("\x1b[B");
+  quick.handleInput("\r");
+  await selected(result);
+  assert.deepEqual(result, [path]);
+});
+
 test("Enter opens typed relative and absolute paths, including spaces", async t => {
   for (const absolute of [false, true]) {
     const { dir, quick, result } = await fixture(t);

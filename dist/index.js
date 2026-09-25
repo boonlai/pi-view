@@ -1817,11 +1817,12 @@ function completePath(args, cwd) {
     return null;
   }
   const showHidden = base.startsWith(".");
+  const foldedBase = base.toLowerCase();
   const head = sep3 === -1 ? tilde ? "~/" : dirLogical : logical.slice(0, sep3 + 1);
   const rows = [];
   for (const d2 of dirents) {
     if (/[\x00-\x1f\x7f-\x9f]/.test(d2.name)) continue;
-    if (!d2.name.startsWith(base)) continue;
+    if (!d2.name.toLowerCase().startsWith(foldedBase)) continue;
     if (!showHidden && d2.name.startsWith(".")) continue;
     let directory = d2.isDirectory();
     if (!directory && d2.isSymbolicLink()) {

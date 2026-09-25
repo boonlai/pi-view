@@ -92,7 +92,7 @@ Without terminal graphics, images appear as labels and PDFs use extracted text. 
 | Read a PDF after installing Poppler | `/view reports/summary.pdf` |
 | Inspect terminal and tool support | `/view --diagnostics` |
 
-Paths support Tab completion. In Quick Open, use arrows to select, `Tab` to complete, and `Enter` to open. The default Quick Open shortcut is `Cmd+P` on macOS, `Ctrl+P` on Windows, and `Super+P` on other platforms. If your terminal intercepts it, use `/view` or [choose another shortcut](#configuration).
+Quick Open and command Tab completion match filename prefixes case-insensitively, preserving their original spelling. In Quick Open, use arrows to select, `Tab` to complete, and `Enter` to open. The default Quick Open shortcut is `Cmd+P` on macOS, `Ctrl+P` on Windows, and `Super+P` on other platforms. If your terminal intercepts it, use `/view` or [choose another shortcut](#configuration).
 
 Previews reload when the file changes; press `r` to reload manually. Press `o` to browse the file's directory. In OMP, standalone Quick Open uses keyboard navigation; wheel input works when Quick Open is layered over a preview.
 
