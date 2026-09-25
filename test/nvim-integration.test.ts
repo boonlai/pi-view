@@ -116,6 +116,16 @@ async function until(predicate: () => boolean | Promise<boolean>, message: strin
   if (!(await predicate())) assert.fail(typeof message === "function" ? message() : message);
 }
 
+// Neovim can temporarily remove the destination while replacing a saved file.
+async function fileContentsEqual(path: string, expected: string): Promise<boolean> {
+  try {
+    return (await readFile(path, "utf8")) === expected;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 // Fixture files live in their own temp dir; its deletion belongs to the
 // file-level after hook (the native child's cwd sits inside it on Windows).
 async function makeFile(name: string, content: string): Promise<string> {
@@ -168,7 +178,7 @@ test(":w saves exact buffer bytes and :q returns to the refreshed preview", asyn
   // Host-initiated close is refused while any session runs.
   assert.equal(viewer.requestClose(), false);
   type(viewer, ":w\r");
-  await until(async () => (await readFile(path, "utf8")) === "line oneappended by nvim<Esc>\n",
+  await until(() => fileContentsEqual(path, "line oneappended by nvim<Esc>\n"),
     ":w persists the exact buffer bytes including the literal <Esc>", 10_000);
   type(viewer, ":q\r");
   await until(() => !viewer.editing, ":q ends the editor session");
@@ -337,7 +347,7 @@ test("markdown previews round-trip an edit through Neovim", async t => {
   await until(() => screen(viewer).includes("body line more"),
     () => `the inserted text renders in the markdown buffer\ncurrent preview screen:\n${screen(viewer)}`, 10_000);
   type(viewer, ":w\r");
-  await until(async () => (await readFile(path, "utf8")) === "# Title\n\nbody line more\n",
+  await until(() => fileContentsEqual(path, "# Title\n\nbody line more\n"),
     ":w persists the markdown buffer exactly", 10_000);
   assert.equal(await readFile(marker, "utf8"), "", "user package plugins stay outside the isolated runtime");
   type(viewer, ":q\r");
@@ -366,12 +376,12 @@ test("literal and Kitty keys preserve text and native modified-Space behavior", 
   editor.input("\x1b[233u"); // Kitty e-acute (U+00E9)
   editor.input("\x1b");
   editor.input(":w\r");
-  await until(async () => (await readFile(path, "utf8")) === "seed+:\u00e9\n",
+  await until(() => fileContentsEqual(path, "seed+:\u00e9\n"),
     "the literal and Kitty edits have been saved", 10_000);
   assert.equal(await readFile(path, "utf8"), "seed+:\u00e9\n",
     "literal and Kitty printable keys reach the file byte-exactly");
   editor.input("A\x1b[32;5u:w\r");
-  await until(async () => (await readFile(path, "utf8")) === "seed+:\u00e9+:\u00e9\n",
+  await until(() => fileContentsEqual(path, "seed+:\u00e9+:\u00e9\n"),
     "Kitty Ctrl-Space repeats the previous insertion and leaves insert mode", 10_000);
 });
 
@@ -393,7 +403,7 @@ test("a ten-thousand e-acute key burst saves byte-exactly", async t => {
   editor.input(burst);
   await until(() => editor.dirty, "the burst marks the buffer dirty", 30_000);
   editor.input(":w\r");
-  await until(async () => (await readFile(path, "utf8")) === "seed" + "\u00e9".repeat(10_000) + "\n",
+  await until(() => fileContentsEqual(path, "seed" + "\u00e9".repeat(10_000) + "\n"),
     "the whole burst reaches the file exactly once", 60_000);
   await until(() => !editor.dirty, "the native save notification clears the modified state");
 });
@@ -449,7 +459,7 @@ test("Ctrl-C interrupts a busy native command without killing the editor", { tim
   editor.start();
   await until(() => editor.ready, "embedded Neovim became ready", 10_000);
   editor.input(`:call writefile(['busy'], '${marker.replace(/'/g, "''")}') | while 1 | endwhile\r`);
-  await until(async () => (await readFile(marker, "utf8")) === "busy\n",
+  await until(() => fileContentsEqual(marker, "busy\n"),
     "the native command reached its busy loop", 10_000);
   editor.input("\x03:q\r");
   await until(() => exit === "quit", "Ctrl-C interrupts the loop and native :q still works", 10_000);
