@@ -73,16 +73,17 @@ ROOT="$(git rev-parse --show-toplevel)"
 (
   set -e
   cd "$ROOT"
-  mkdir -p release-assets
-  gh run download "$RUN_ID" --name release-package --dir release-assets
-  (cd release-assets && shasum -a 256 --check ./*.tgz.sha256)
-  expected="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); console.log(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`)' release-assets/*.tgz)"
+  ASSETS="release-assets/$TAG"
+  mkdir -p "$ASSETS"
+  gh run download "$RUN_ID" --name release-package --dir "$ASSETS"
+  (cd "$ASSETS" && shasum -a 256 --check ./*.tgz.sha256)
+  expected="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); console.log(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`)' "$ASSETS/boonlai-pi-view-${TAG#v}.tgz")"
   published="$(npm view "@boonlai/pi-view@${TAG#v}" dist.integrity --registry=https://registry.npmjs.org)"
   test "$published" = "$expected"
   if gh release view "$TAG" >/dev/null 2>&1; then
-    gh release upload "$TAG" release-assets/*.tgz release-assets/*.tgz.sha256 --clobber
+    gh release upload "$TAG" "$ASSETS/"*.tgz "$ASSETS/"*.tgz.sha256 --clobber
   else
-    gh release create "$TAG" release-assets/*.tgz release-assets/*.tgz.sha256 --verify-tag --generate-notes --title "$TAG"
+    gh release create "$TAG" "$ASSETS/"*.tgz "$ASSETS/"*.tgz.sha256 --verify-tag --generate-notes --title "$TAG"
   fi
 )
 ```
