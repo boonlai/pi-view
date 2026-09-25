@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Verify and pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out tagged commit or main
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.22.0"
+      - name: Check release prerequisites
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node ci/verify-release.mjs
+      - name: Install dependencies
+        run: npm ci
+      - name: Check and rebuild committed dist
+        run: |
+          npm run check
+          npm run build
+          node ci/check-dist.mjs
+      - name: Pack and test the installed archive
+        run: node ci/pack-release.mjs
+      - name: Upload tested archive and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/pi-view-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm and GitHub
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Install Node and configure npm registry
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.22.0"
+          registry-url: https://registry.npmjs.org
+      - name: Download tested archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/pi-view-release
+      - name: Verify archive checksum
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/pi-view-release"
+          archives=("$dir"/*.tgz)
+          checksums=("$dir"/*.tgz.sha256)
+          [[ ${#archives[@]} -eq 1 && -f ${archives[0]} ]]
+          [[ ${#checksums[@]} -eq 1 && -f ${checksums[0]} ]]
+          archive_name="${archives[0]##*/}"
+          [[ ${checksums[0]##*/} == "$archive_name.sha256" ]]
+          read -r digest listed_name < "${checksums[0]}"
+          [[ $digest =~ ^[[:xdigit:]]{64}$ && $listed_name == "$archive_name" ]]
+          (cd "$dir" && sha256sum --check -- "$archive_name.sha256")
+          echo "tarball=${archives[0]}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${checksums[0]}" >> "$GITHUB_OUTPUT"
+      - name: Publish tested archive
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          ARCHIVE: ${{ steps.archive.outputs.tarball }}
+        run: npm publish "$ARCHIVE" --provenance --access public
+      - name: Create GitHub release with tested assets
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.archive.outputs.tarball }}
+          CHECKSUM: ${{ steps.archive.outputs.checksum }}
+        run: gh release create "$GITHUB_REF_NAME" "$ARCHIVE" "$CHECKSUM" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

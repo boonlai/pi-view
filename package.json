@@ -1,8 +1,19 @@
 {
   "name": "pi-view",
   "version": "0.3.0",
-  "private": true,
+  "private": false,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boonlai/pi-view.git"
+  },
+  "homepage": "https://github.com/boonlai/pi-view#readme",
+  "bugs": {
+    "url": "https://github.com/boonlai/pi-view/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "In-terminal file previews for Pi and Oh My Pi",
   "type": "module",
   "engines": {
