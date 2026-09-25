@@ -39,15 +39,17 @@ Quick Open completes paths and opens files without leaving your session. Select 
 
 Requires Node.js 22.19 or newer. For OMP's image worker, keep `node` on `PATH` or set `PI_VIEW_NODE` to its executable path. Package dependencies are installed with pi-view.
 
-Install for your agent:
+Install the published package from [npm](https://www.npmjs.com/package/@boonlai/pi-view):
 
 ```bash
 # Pi
-pi install git:github.com/boonlai/pi-view
+pi install npm:@boonlai/pi-view
 
 # Oh My Pi
-omp install git+https://github.com/boonlai/pi-view.git
+omp plugin install @boonlai/pi-view
 ```
+
+If you previously installed from Git, [remove that installation](#update-disable-or-remove) before switching to npm to avoid loading two copies.
 
 Restart your agent, then open a file:
 
@@ -60,7 +62,19 @@ The file opens in a full-screen preview. Press `/` to search, `s` to switch betw
 Text, Markdown, and image decoding need no extra tools. PDF previews require Poppler, editing requires Neovim 0.9+, and inline images require a graphics-capable terminal supported by your host. See [optional support](#optional-support) for setup and fallbacks.
 
 <details>
-<summary>Install over SSH</summary>
+<summary>Install from Git instead</summary>
+
+Git installs follow the repository rather than an npm release.
+
+```bash
+# Pi
+pi install git:github.com/boonlai/pi-view
+
+# Oh My Pi
+omp plugin install git+https://github.com/boonlai/pi-view.git
+```
+
+For SSH:
 
 ```bash
 pi install git:git@github.com:boonlai/pi-view
@@ -266,18 +280,20 @@ Choose the action you need; these are alternatives, not a sequence.
 
 | Action | Pi |
 | --- | --- |
-| Update | `pi update git:github.com/boonlai/pi-view` |
+| Update | `pi update npm:@boonlai/pi-view` |
 | Enable or disable | `pi config` |
-| Remove | `pi remove git:github.com/boonlai/pi-view` |
+| Remove | `pi remove npm:@boonlai/pi-view` |
 
-For Pi updates and removal, use the source you originally installed if you chose SSH.
+For a Git installation, pass the original Git source to `pi update` or `pi remove` instead.
 
 | Action | OMP |
 | --- | --- |
-| Update the Git-installed package | `omp plugin install git+https://github.com/boonlai/pi-view.git --force` |
-| Disable | `omp plugin disable pi-view` |
-| Re-enable | `omp plugin enable pi-view` |
-| Remove | `omp plugin uninstall pi-view` |
+| Update | `omp plugin install @boonlai/pi-view --force` |
+| Disable | `omp plugin disable @boonlai/pi-view` |
+| Re-enable | `omp plugin enable @boonlai/pi-view` |
+| Remove | `omp plugin uninstall @boonlai/pi-view` |
+
+For a Git installation, reinstall its original URL with `--force`. Use `omp plugin list` to find its installed name for enabling, disabling, or uninstalling.
 
 Restart the host after changing the installation. Uninstalling does not remove opened-file entries from existing host sessions or the saved line-number preference. To reset that preference, close the hosts and delete only pi-view's `settings.json` from the [configuration location above](#files-network-and-saved-state).
 
