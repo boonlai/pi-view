@@ -298,4 +298,6 @@ omp -e ./dist/index.js
 
 `npm run watch` rebuilds on edits. Restart the host to load a changed bundle, and commit updated `dist/` files with source changes. Full integration coverage needs OMP, Poppler, and Neovim; tool-dependent tests can skip when those prerequisites are absent. CI installs its pinned tools before running the suite and checks that committed bundles match the build.
 
+For maintainers, see [releasing pi-view](https://github.com/boonlai/pi-view/blob/main/docs/releasing.md) for the npm release process.
+
 [MIT licensed](LICENSE).
