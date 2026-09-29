@@ -117,6 +117,8 @@ Press `?` in a preview for help. These controls apply to previews, not an active
 | Close | `Esc` / `Ctrl+C` |
 | Scroll text | Arrows, `j` / `k`, `PgUp` / `PgDn`, wheel |
 | Search text or filter a directory; next / previous match | `/`, then `n` / `N` for search matches |
+| Move the rendered Markdown cursor | `j` / `k`, arrows |
+| Select and copy rendered Markdown | `v` characterwise, `V` linewise, `Ctrl+V` blockwise; move with `j` / `k` / arrows, then `y`; `Esc` cancels |
 | Markdown source / PDF text view | `s` |
 | Edit the file with embedded Neovim | `e` (text / Markdown previews) |
 | Toggle source line numbers (remembered) | `l` |
@@ -128,6 +130,8 @@ Press `?` in a preview for help. These controls apply to previews, not an active
 | Jump to a PDF page | `g`, page number, `Enter` |
 | Reload / browse the directory | `r` / `o` |
 | Help / diagnostics | `?` / `d` |
+
+Rendered Markdown has a movable cursor and Neovim-style visual modes: `v` selects characters, `V` selects whole lines, and `Ctrl+V` selects a rectangular block. Move before or during selection with `j` / `k` or the arrows; press `y` to copy through the terminal's OSC 52 clipboard support, or `Esc` to cancel. Clipboard support depends on the terminal accepting OSC 52.
 
 The wheel scrolls text or turns PDF pages; it never zooms. In PDF text view, the wheel and `PgUp` / `PgDn` scroll text. Line numbers apply to text/code and Markdown source, not rendered Markdown or extracted PDF text.
 

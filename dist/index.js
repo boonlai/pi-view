@@ -4925,6 +4925,9 @@ Home / End                 Start / end of text
 n / N                      Next / previous search match
 w                          Toggle line wrapping
 l                          Toggle source line numbers (remembered)
+j / k                      Move the Markdown cursor
+v                           Characterwise selection; V linewise; Ctrl+V blockwise
+y                           Yank selection to the terminal clipboard
 s                          Markdown source / PDF extracted text
 e                          Edit with Neovim (:w saves, :q! discards, :q returns)
 Enter or i                 Focus the first visible Markdown image
@@ -4975,6 +4978,9 @@ var PreviewViewer = class {
   reloadTimer;
   detachMouse;
   offset = 0;
+  cursor = { row: 0, col: 0 };
+  visualMode;
+  selectionAnchor;
   matchRow;
   matchHit;
   horizontal = 0;
@@ -5074,6 +5080,9 @@ var PreviewViewer = class {
     this.message = "";
     if (!this.watcher) this.watchPath(path3);
     if (!reload) {
+      this.selectionAnchor = void 0;
+      this.visualMode = void 0;
+      this.cursor = { row: 0, col: 0 };
       this.document = void 0;
       this.picker = void 0;
       this.panel = void 0;
@@ -5230,7 +5239,13 @@ var PreviewViewer = class {
       return;
     }
     if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
-    else this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
+    else {
+      this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
+      if (this.document?.kind === "markdown" && !this.source && !this.visualMode && (this.cursor.row < this.offset || this.cursor.row >= this.offset + this.bodyHeight)) {
+        this.cursor.row = this.offset;
+        this.cursor.col = 0;
+      }
+    }
     this.redraw();
   }
   setPage(page) {
@@ -5267,6 +5282,12 @@ var PreviewViewer = class {
     else if (key === "shift+=") data = "+";
     else if (key === "shift+/") data = "?";
     else if (key === "space") data = " ";
+    if ((matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) && this.visualMode) {
+      this.selectionAnchor = void 0;
+      this.visualMode = void 0;
+      this.redraw();
+      return;
+    }
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
       this.dispose();
       this.done();
@@ -5289,6 +5310,8 @@ var PreviewViewer = class {
       return;
     }
     if (data === "?") {
+      this.selectionAnchor = void 0;
+      this.visualMode = void 0;
       this.panel = HELP;
       this.offset = 0;
       this.clearFrames();
@@ -5342,6 +5365,8 @@ var PreviewViewer = class {
     }
     if (data === "s" && !this.panel && (this.document?.kind === "markdown" || this.document?.kind === "pdf")) {
       this.source = !this.source;
+      this.selectionAnchor = void 0;
+      this.visualMode = void 0;
       this.focusImage = void 0;
       this.visibleImages = [];
       this.offset = 0;
@@ -5380,6 +5405,36 @@ var PreviewViewer = class {
       this.redraw();
       return;
     }
+    if (!this.panel && !this.picker && this.document?.kind === "markdown" && !this.source) {
+      const rows = this.markdownRows();
+      if (data === "v" || data === "V" || matchesKey(data, "ctrl+v")) {
+        this.visualMode = data === "V" ? "line" : matchesKey(data, "ctrl+v") ? "block" : "char";
+        this.selectionAnchor = { ...this.cursor };
+        this.redraw();
+        return;
+      }
+      if (this.visualMode && data === "y") {
+        this.yankMarkdownSelection();
+        return;
+      }
+      const vertical = matchesKey(data, "up") || data === "k" ? -1 : matchesKey(data, "down") || data === "j" ? 1 : matchesKey(data, "pageUp") ? -this.bodyHeight : matchesKey(data, "pageDown") || data === " " ? this.bodyHeight : 0;
+      const horizontal = matchesKey(data, "left") || data === "h" ? -1 : matchesKey(data, "right") || this.visualMode !== void 0 && data === "l" ? 1 : 0;
+      if (vertical || horizontal || matchesKey(data, "home") || matchesKey(data, "end")) {
+        this.cursor.row = Math.max(0, Math.min(Math.max(0, rows.length - 1), this.cursor.row + vertical));
+        if (matchesKey(data, "home")) this.cursor.col = 0;
+        else if (matchesKey(data, "end")) this.cursor.col = visibleWidth2(rows[this.cursor.row] ?? "");
+        else if (horizontal) this.cursor.col = Math.max(0, this.cursor.col + horizontal);
+        if (this.visualMode !== "block") this.cursor.col = Math.min(this.cursor.col, visibleWidth2(rows[this.cursor.row] ?? ""));
+        if (this.cursor.row < this.offset) this.offset = this.cursor.row;
+        else if (this.cursor.row >= this.offset + this.bodyHeight) this.offset = this.cursor.row - this.bodyHeight + 1;
+        this.redraw();
+        return;
+      }
+      if (this.visualMode) {
+        this.redraw();
+        return;
+      }
+    }
     if (data === "w") {
       this.wrap = !this.wrap;
       this.horizontal = 0;
@@ -5403,6 +5458,31 @@ var PreviewViewer = class {
     else if (matchesKey(data, "left")) this.horizontal = Math.max(0, this.horizontal - 8);
     else if (matchesKey(data, "right")) this.horizontal = Math.min(1e5, this.horizontal + 8);
     this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset));
+    this.redraw();
+  }
+  markdownRows() {
+    return this.getLayout(this.width).blocks.flatMap((block) => block.kind === "text" ? block.lines.map((line) => stripVTControlCharacters2(line)) : [`[${block.alt || block.target}]`, ...Array(Math.max(0, block.rows - 1)).fill("")]);
+  }
+  yankMarkdownSelection() {
+    const anchor = this.selectionAnchor;
+    if (!anchor || !this.visualMode) return;
+    const rows = this.markdownRows();
+    const firstRow = Math.min(anchor.row, this.cursor.row), lastRow = Math.max(anchor.row, this.cursor.row);
+    const firstCol = anchor.row < this.cursor.row ? anchor.col : anchor.row > this.cursor.row ? this.cursor.col : Math.min(anchor.col, this.cursor.col);
+    const lastCol = anchor.row < this.cursor.row ? this.cursor.col : anchor.row > this.cursor.row ? anchor.col : Math.max(anchor.col, this.cursor.col);
+    const selected = rows.slice(firstRow, lastRow + 1).map((line, index) => {
+      if (this.visualMode === "line") return line;
+      if (this.visualMode === "block") return sliceByColumn(line, Math.min(anchor.col, this.cursor.col), Math.abs(anchor.col - this.cursor.col) + 1);
+      const row = firstRow + index;
+      const start = row === firstRow ? firstCol : 0;
+      const end = row === lastRow ? lastCol : visibleWidth2(line);
+      return sliceByColumn(line, start, Math.max(0, end - start + 1));
+    });
+    const text = selected.join("\n");
+    this.tui.terminal.write(`\x1B]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`);
+    this.message = `Yanked ${selected.length} ${this.visualMode === "block" ? "block row" : "line"}${selected.length === 1 ? "" : "s"} to clipboard`;
+    this.selectionAnchor = void 0;
+    this.visualMode = void 0;
     this.redraw();
   }
   startInput(mode) {
@@ -5615,6 +5695,7 @@ var PreviewViewer = class {
     this.matchHit = { list: matches, index };
     this.matchRow = match.row;
     this.offset = match.row;
+    if (this.document?.kind === "markdown" && !this.source) this.cursor = { row: match.row, col: 0 };
     this.message = "";
     this.redraw();
   }
@@ -5722,6 +5803,15 @@ var PreviewViewer = class {
     const status = frame.error ? ` \u2014 ${frame.error}` : " \u2014 loading\u2026";
     return [truncateToWidth(this.theme.fg("muted", `[${safeText(label)}]${status}`.replace(/[\n\t]/g, " ")), width), ...Array(rows - 1).fill("")];
   }
+  paintRange(line, start, end) {
+    const width = visibleWidth2(line);
+    start = Math.max(0, Math.min(width, start));
+    end = Math.max(start, Math.min(Math.max(0, width - 1), end));
+    const before = sliceByColumn(line, 0, start);
+    const middle = sliceByColumn(line, start, Math.max(1, end - start + 1));
+    const after = sliceByColumn(line, end + 1, Math.max(0, width - end - 1));
+    return before + this.theme.bg("selectedBg", stripVTControlCharacters2(middle) || " ") + after;
+  }
   frame(title, body, status, width) {
     const border = this.theme.fg("borderMuted", "\u2500".repeat(width));
     return [
@@ -5786,7 +5876,23 @@ var PreviewViewer = class {
           } else {
             body.push(...block.lines.slice(start, end).map((line, i) => {
               let shown = this.wrap ? truncateToWidth(line, width, "") : sliceByColumn(line, this.horizontal, width);
-              if (highlighted.has(cursor + start + i)) shown = this.theme.bg("selectedBg", shown);
+              const absoluteRow = cursor + start + i;
+              if (highlighted.has(absoluteRow)) shown = this.theme.bg("selectedBg", shown);
+              if (document?.kind === "markdown" && !this.source) {
+                const anchor = this.selectionAnchor;
+                if (this.visualMode === "line" && anchor) {
+                  if (absoluteRow >= Math.min(anchor.row, this.cursor.row) && absoluteRow <= Math.max(anchor.row, this.cursor.row)) shown = this.theme.bg("selectedBg", shown);
+                } else if (this.visualMode === "block" && anchor && absoluteRow >= Math.min(anchor.row, this.cursor.row) && absoluteRow <= Math.max(anchor.row, this.cursor.row)) {
+                  shown = this.paintRange(shown, Math.min(anchor.col, this.cursor.col) - this.horizontal, Math.max(anchor.col, this.cursor.col) - this.horizontal);
+                } else if (this.visualMode === "char" && anchor && absoluteRow >= Math.min(anchor.row, this.cursor.row) && absoluteRow <= Math.max(anchor.row, this.cursor.row)) {
+                  const startCol = absoluteRow === Math.min(anchor.row, this.cursor.row) ? anchor.row < this.cursor.row ? anchor.col : this.cursor.col : 0;
+                  const endCol = absoluteRow === Math.max(anchor.row, this.cursor.row) ? anchor.row < this.cursor.row ? this.cursor.col : anchor.col : visibleWidth2(line);
+                  shown = this.paintRange(shown, startCol - this.horizontal, endCol - this.horizontal);
+                } else if (!this.visualMode && absoluteRow === this.cursor.row) {
+                  const col = this.cursor.col - this.horizontal;
+                  shown = this.paintRange(shown, col, col);
+                }
+              }
               return shown;
             }));
           }
@@ -5811,7 +5917,7 @@ var PreviewViewer = class {
     }
     body.push(...Array(Math.max(0, this.bodyHeight - body.length)).fill(""));
     if (this.editor) return this.frame(title, body, this.message || ":w save \xB7 :wq/:q return \xB7 :q! discard \xB7 keys go to Neovim", width);
-    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : `${this.editable() ? "e: edit \xB7 " : ""}\u2191\u2193 wheel: scroll \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close`);
+    let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow \xB7 any other key: deny" : this.message || (this.imageMode() ? `+/-: zoom \xB7 arrows: pan${document?.kind === "pdf" ? " \xB7 wheel: pages" : ""} \xB7 0: fit \xB7 1: actual \xB7 b: back \xB7 Esc: close` : this.picker && !this.panel ? "\u2191\u2193: choose \xB7 Enter: open \xB7 Backspace: parent \xB7 /: filter \xB7 Esc: close" : this.visualMode ? `VISUAL ${this.visualMode.toUpperCase()} \xB7 arrows/j/k: extend \xB7 y: copy \xB7 Esc: cancel` : `${this.editable() ? "e: edit \xB7 " : ""}${document?.kind === "markdown" && !this.source ? "v: visual \xB7 Ctrl+V: block \xB7 " : ""}\u2191\u2193/j/k: move \xB7 /: search \xB7 n/N: matches \xB7 s: source/text \xB7 i: image \xB7 ?: help \xB7 Esc: close`);
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
     return this.frame(title, body, status, width);
   }
