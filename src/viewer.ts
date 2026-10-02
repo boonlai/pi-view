@@ -15,6 +15,8 @@ type TextUnit = { content: string; spans: { row: number; start: number; end: num
 type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
 type SearchMatch = { row: number; endRow: number };
 type SearchState = { query: string; matches: SearchMatch[] };
+type VisualMode = "char" | "line" | "block";
+type Position = { row: number; col: number };
 type Frame = { abort: AbortController; component?: TerminalImage; retired?: TerminalImage; error?: string; rendered?: string; pending?: string };
 type LoadedImage = { image?: ImageSource; error?: string; promise?: Promise<ImageSource>; abort?: AbortController };
 
@@ -64,6 +66,9 @@ Home / End                 Start / end of text
 n / N                      Next / previous search match
 w                          Toggle line wrapping
 l                          Toggle source line numbers (remembered)
+j / k                      Move the Markdown cursor
+v                           Characterwise selection; V linewise; Ctrl+V blockwise
+y                           Yank selection to the terminal clipboard
 s                          Markdown source / PDF extracted text
 e                          Edit with Neovim (:w saves, :q! discards, :q returns)
 Enter or i                 Focus the first visible Markdown image
@@ -99,6 +104,9 @@ export class PreviewViewer implements Component {
   private reloadTimer?: NodeJS.Timeout;
   private detachMouse?: () => void;
   private offset = 0;
+  private cursor: Position = { row: 0, col: 0 };
+  private visualMode?: VisualMode;
+  private selectionAnchor?: Position;
   private matchRow?: number;
   private matchHit?: { list: SearchMatch[]; index: number };
   private horizontal = 0;
@@ -198,6 +206,8 @@ export class PreviewViewer implements Component {
     this.message = "";
     if (!this.watcher) this.watchPath(path);
     if (!reload) {
+      this.selectionAnchor = undefined; this.visualMode = undefined;
+      this.cursor = { row: 0, col: 0 };
       this.document = undefined; this.picker = undefined; this.panel = undefined;
       this.offset = 0; this.horizontal = 0; this.source = false; this.page = 1;
       this.query = ""; this.filter = ""; this.focusImage = undefined; this.remoteAllowed = false;
@@ -314,7 +324,12 @@ export class PreviewViewer implements Component {
       return;
     }
     if (this.picker && !this.panel) this.picker.selected = Math.max(0, Math.min(this.filteredEntries().length - 1, this.picker.selected + Math.sign(delta) * 3));
-    else this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
+    else {
+      this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset + Math.sign(delta) * 3));
+      if (this.document?.kind === "markdown" && !this.source && !this.visualMode && (this.cursor.row < this.offset || this.cursor.row >= this.offset + this.bodyHeight)) {
+        this.cursor.row = this.offset; this.cursor.col = 0;
+      }
+    }
     this.redraw();
   }
 
@@ -353,6 +368,9 @@ export class PreviewViewer implements Component {
     else if (key === "shift+=") data = "+";
     else if (key === "shift+/") data = "?";
     else if (key === "space") data = " ";
+    if ((matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) && this.visualMode) {
+      this.selectionAnchor = undefined; this.visualMode = undefined; this.redraw(); return;
+    }
     if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) { this.dispose(); this.done(); return; }
     if (this.remotePrompt) {
       this.remotePrompt = false;
@@ -363,7 +381,7 @@ export class PreviewViewer implements Component {
       return;
     }
     if (this.inputMode) { this.input.handleInput(raw); this.redraw(); return; }
-    if (data === "?") { this.panel = HELP; this.offset = 0; this.clearFrames(); this.redraw(true); return; }
+    if (data === "?") { this.selectionAnchor = undefined; this.visualMode = undefined; this.panel = HELP; this.offset = 0; this.clearFrames(); this.redraw(true); return; }
     if (data === "d") { void this.showDiagnostics(); return; }
     if (data === "b") {
       this.panel = undefined; this.focusImage = undefined; this.offset = 0; this.resetZoom();
@@ -386,7 +404,7 @@ export class PreviewViewer implements Component {
     }
     if (data === "e" && this.editable()) { this.startEditing(); return; }
     if (data === "s" && !this.panel && (this.document?.kind === "markdown" || this.document?.kind === "pdf")) {
-      this.source = !this.source; this.focusImage = undefined; this.visibleImages = []; this.offset = 0; this.clearFrames();
+      this.source = !this.source; this.selectionAnchor = undefined; this.visualMode = undefined; this.focusImage = undefined; this.visibleImages = []; this.offset = 0; this.clearFrames();
       if (this.source && this.document.kind === "pdf" && this.pdfSource === undefined) void this.loadPdfText();
       this.redraw(true); return;
     }
@@ -411,6 +429,31 @@ export class PreviewViewer implements Component {
     if ((matchesKey(data, "enter") || data === "i") && this.visibleImages.length) {
       this.focusImage = this.visibleImages[0]; this.resetZoom(); this.redraw(); return;
     }
+    if (!this.panel && !this.picker && this.document?.kind === "markdown" && !this.source) {
+      const rows = this.markdownRows();
+      if (data === "v" || data === "V" || matchesKey(data, "ctrl+v")) {
+        this.visualMode = data === "V" ? "line" : matchesKey(data, "ctrl+v") ? "block" : "char";
+        this.selectionAnchor = { ...this.cursor };
+        this.redraw(); return;
+      }
+      if (this.visualMode && data === "y") { this.yankMarkdownSelection(); return; }
+      const vertical = matchesKey(data, "up") || data === "k" ? -1
+        : matchesKey(data, "down") || data === "j" ? 1
+        : matchesKey(data, "pageUp") ? -this.bodyHeight
+        : matchesKey(data, "pageDown") || data === " " ? this.bodyHeight : 0;
+      const horizontal = matchesKey(data, "left") || data === "h" ? -1 : matchesKey(data, "right") || (this.visualMode !== undefined && data === "l") ? 1 : 0;
+      if (vertical || horizontal || matchesKey(data, "home") || matchesKey(data, "end")) {
+        this.cursor.row = Math.max(0, Math.min(Math.max(0, rows.length - 1), this.cursor.row + vertical));
+        if (matchesKey(data, "home")) this.cursor.col = 0;
+        else if (matchesKey(data, "end")) this.cursor.col = visibleWidth(rows[this.cursor.row] ?? "");
+        else if (horizontal) this.cursor.col = Math.max(0, this.cursor.col + horizontal);
+        if (this.visualMode !== "block") this.cursor.col = Math.min(this.cursor.col, visibleWidth(rows[this.cursor.row] ?? ""));
+        if (this.cursor.row < this.offset) this.offset = this.cursor.row;
+        else if (this.cursor.row >= this.offset + this.bodyHeight) this.offset = this.cursor.row - this.bodyHeight + 1;
+        this.redraw(); return;
+      }
+      if (this.visualMode) { this.redraw(); return; }
+    }
     if (data === "w") { this.wrap = !this.wrap; this.horizontal = 0; this.redraw(true); return; }
     if (data === "l") { this.toggleNumbers(); return; }
     if (data === "n" || data === "N") { this.findMatch(data === "N" ? -1 : 1); return; }
@@ -423,6 +466,34 @@ export class PreviewViewer implements Component {
     else if (matchesKey(data, "left")) this.horizontal = Math.max(0, this.horizontal - 8);
     else if (matchesKey(data, "right")) this.horizontal = Math.min(100_000, this.horizontal + 8);
     this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset));
+    this.redraw();
+  }
+
+  private markdownRows(): string[] {
+    return this.getLayout(this.width).blocks.flatMap(block => block.kind === "text"
+      ? block.lines.map(line => stripVTControlCharacters(line))
+      : [`[${block.alt || block.target}]`, ...Array(Math.max(0, block.rows - 1)).fill("")]);
+  }
+
+  private yankMarkdownSelection(): void {
+    const anchor = this.selectionAnchor;
+    if (!anchor || !this.visualMode) return;
+    const rows = this.markdownRows();
+    const firstRow = Math.min(anchor.row, this.cursor.row), lastRow = Math.max(anchor.row, this.cursor.row);
+    const firstCol = anchor.row < this.cursor.row ? anchor.col : anchor.row > this.cursor.row ? this.cursor.col : Math.min(anchor.col, this.cursor.col);
+    const lastCol = anchor.row < this.cursor.row ? this.cursor.col : anchor.row > this.cursor.row ? anchor.col : Math.max(anchor.col, this.cursor.col);
+    const selected = rows.slice(firstRow, lastRow + 1).map((line, index) => {
+      if (this.visualMode === "line") return line;
+      if (this.visualMode === "block") return sliceByColumn(line, Math.min(anchor.col, this.cursor.col), Math.abs(anchor.col - this.cursor.col) + 1);
+      const row = firstRow + index;
+      const start = row === firstRow ? firstCol : 0;
+      const end = row === lastRow ? lastCol : visibleWidth(line);
+      return sliceByColumn(line, start, Math.max(0, end - start + 1));
+    });
+    const text = selected.join("\n");
+    this.tui.terminal.write(`\x1b]52;c;${Buffer.from(text, "utf8").toString("base64")}\x07`);
+    this.message = `Yanked ${selected.length} ${this.visualMode === "block" ? "block row" : "line"}${selected.length === 1 ? "" : "s"} to clipboard`;
+    this.selectionAnchor = undefined; this.visualMode = undefined;
     this.redraw();
   }
 
@@ -622,7 +693,9 @@ export class PreviewViewer implements Component {
     }
     const match = matches[index];
     this.matchHit = { list: matches, index };
-    this.matchRow = match.row; this.offset = match.row; this.message = ""; this.redraw();
+    this.matchRow = match.row; this.offset = match.row;
+    if (this.document?.kind === "markdown" && !this.source) this.cursor = { row: match.row, col: 0 };
+    this.message = ""; this.redraw();
   }
 
   private getImage(target: string): Promise<ImageSource> {
@@ -729,6 +802,16 @@ export class PreviewViewer implements Component {
     return [truncateToWidth(this.theme.fg("muted", `[${safeText(label)}]${status}`.replace(/[\n\t]/g, " ")), width), ...Array(rows - 1).fill("")];
   }
 
+  private paintRange(line: string, start: number, end: number): string {
+    const width = visibleWidth(line);
+    start = Math.max(0, Math.min(width, start));
+    end = Math.max(start, Math.min(Math.max(0, width - 1), end));
+    const before = sliceByColumn(line, 0, start);
+    const middle = sliceByColumn(line, start, Math.max(1, end - start + 1));
+    const after = sliceByColumn(line, end + 1, Math.max(0, width - end - 1));
+    return before + this.theme.bg("selectedBg", stripVTControlCharacters(middle) || " ") + after;
+  }
+
   private frame(title: string, body: string[], status: string, width: number): string[] {
     const border = this.theme.fg("borderMuted", "─".repeat(width));
     return [this.theme.fg("accent", truncateToWidth(safeText(title).replace(/[\n\t]/g, " "), width)), border,
@@ -790,7 +873,23 @@ export class PreviewViewer implements Component {
           } else {
             body.push(...block.lines.slice(start, end).map((line, i) => {
               let shown = this.wrap ? truncateToWidth(line, width, "") : sliceByColumn(line, this.horizontal, width);
-              if (highlighted.has(cursor + start + i)) shown = this.theme.bg("selectedBg", shown);
+              const absoluteRow = cursor + start + i;
+              if (highlighted.has(absoluteRow)) shown = this.theme.bg("selectedBg", shown);
+              if (document?.kind === "markdown" && !this.source) {
+                const anchor = this.selectionAnchor;
+                if (this.visualMode === "line" && anchor) {
+                  if (absoluteRow >= Math.min(anchor.row, this.cursor.row) && absoluteRow <= Math.max(anchor.row, this.cursor.row)) shown = this.theme.bg("selectedBg", shown);
+                } else if (this.visualMode === "block" && anchor && absoluteRow >= Math.min(anchor.row, this.cursor.row) && absoluteRow <= Math.max(anchor.row, this.cursor.row)) {
+                  shown = this.paintRange(shown, Math.min(anchor.col, this.cursor.col) - this.horizontal, Math.max(anchor.col, this.cursor.col) - this.horizontal);
+                } else if (this.visualMode === "char" && anchor && absoluteRow >= Math.min(anchor.row, this.cursor.row) && absoluteRow <= Math.max(anchor.row, this.cursor.row)) {
+                  const startCol = absoluteRow === Math.min(anchor.row, this.cursor.row) ? (anchor.row < this.cursor.row ? anchor.col : this.cursor.col) : 0;
+                  const endCol = absoluteRow === Math.max(anchor.row, this.cursor.row) ? (anchor.row < this.cursor.row ? this.cursor.col : anchor.col) : visibleWidth(line);
+                  shown = this.paintRange(shown, startCol - this.horizontal, endCol - this.horizontal);
+                } else if (!this.visualMode && absoluteRow === this.cursor.row) {
+                  const col = this.cursor.col - this.horizontal;
+                  shown = this.paintRange(shown, col, col);
+                }
+              }
               return shown;
             }));
           }
@@ -810,7 +909,8 @@ export class PreviewViewer implements Component {
     let status = this.remotePrompt ? "Fetch remote Markdown images? Requests may reveal your IP. y: allow · any other key: deny"
       : this.message || (this.imageMode() ? `+/-: zoom · arrows: pan${document?.kind === "pdf" ? " · wheel: pages" : ""} · 0: fit · 1: actual · b: back · Esc: close`
       : this.picker && !this.panel ? "↑↓: choose · Enter: open · Backspace: parent · /: filter · Esc: close"
-      : `${this.editable() ? "e: edit · " : ""}↑↓ wheel: scroll · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close`);
+      : this.visualMode ? `VISUAL ${this.visualMode.toUpperCase()} · arrows/j/k: extend · y: copy · Esc: cancel`
+      : `${this.editable() ? "e: edit · " : ""}${document?.kind === "markdown" && !this.source ? "v: visual · Ctrl+V: block · " : ""}↑↓/j/k: move · /: search · n/N: matches · s: source/text · i: image · ?: help · Esc: close`);
     if (this.inputMode) status = `${this.inputMode}: ${this.input.render(Math.max(1, width - this.inputMode.length - 2))[0] ?? ""}`;
     return this.frame(title, body, status, width);
   }
