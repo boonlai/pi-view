@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a problem with pi-view.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check whether the problem still occurs with the latest pi-view release and review the README's troubleshooting section before reporting.
+        Remove credentials, personal paths, and private content from logs, screenshots, and sample files.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What went wrong?
+      description: Describe what happened and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How can we reproduce it?
+      description: Include the command or shortcut, file type, and steps. Attach a small non-sensitive sample if the problem depends on a file.
+      placeholder: |
+        1. Start Pi.
+        2. Run /view example.md.
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: pi-view version
+      description: For a Git or local installation, include the commit if known.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: Pi, OMP, etc.
+      value: Pi
+    validations:
+      required: true
+  - type: input
+    id: host-version
+    attributes:
+      label: Host version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and terminal
+      description: Include versions and any multiplexer or remote session involved.
+      placeholder: "Ubuntu 24.04, Kitty 0.40.1, tmux 3.4 over SSH"
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation source
+      options:
+        - npm
+        - Git
+        - Local checkout
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics and errors
+      description: Paste relevant /view --diagnostics output and any errors. For PDF or editing problems, include the Poppler or Neovim version if available. Redact private information first.
+      render: text
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include relevant configuration, screenshots, or whether this worked in an earlier version.

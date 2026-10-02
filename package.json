@@ -15,6 +15,9 @@
     "access": "public"
   },
   "description": "In-terminal file previews for Pi and Oh My Pi",
+  "keywords": [
+    "pi-package"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
