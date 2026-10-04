@@ -1,10 +1,18 @@
+<div align="center">
+
 # pi-view
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-
-Press **Cmd+P on macOS, Ctrl+P on Windows, or Super+P on Linux** to open Quick Open.
+**Preview files without leaving your agent.**
 
 Preview Markdown, code, images, and PDFs inside [Pi](https://pi.dev) and [Oh My Pi](https://github.com/can1357/oh-my-pi). Opening a preview does not add the file's contents to the model context.
+
+[![npm version](https://img.shields.io/npm/v/@boonlai/pi-view?color=cb3837)](https://www.npmjs.com/package/@boonlai/pi-view)
+[![Pi package](https://img.shields.io/badge/Pi-package-8b5cf6)](https://pi.dev/packages/@boonlai/pi-view)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
+</div>
+
+Press **Cmd+P on macOS, Ctrl+P on Windows, or Super+P on Linux** to open Quick Open.
 
 Use Quick Open to find session files, search text, and inspect images without leaving your agent. Previews refresh when files change. Optional Neovim support lets you edit text and Markdown in place.
 
