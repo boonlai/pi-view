@@ -193,7 +193,7 @@ Both hosts load the same extension bundle, with host-specific handling for overl
 | Component | Requirement or project target |
 | --- | --- |
 | Node.js | 22.19+; OMP's image worker needs a Node executable |
-| Pi | Declared SDK range: `>=0.85.1 <0.86.0`; development SDK: 0.85.1 |
+| Pi | Declared SDK ranges: `>=0.85.1 <0.86.0` or `>=0.99.2 <0.100.0`; development SDK: 0.99.2 |
 | Oh My Pi | CI runtime pin: 18.2.4 |
 | Operating systems | CI is configured for Linux, macOS, and Windows |
 | Terminal graphics | Depends on the host's detected protocol; text fallbacks are available |
@@ -311,6 +311,8 @@ omp -e ./dist/index.js
 ```
 
 `npm run watch` rebuilds on edits. Restart the host to load a changed bundle, and commit updated `dist/` files with source changes. Full integration coverage needs OMP, Poppler, and Neovim; tool-dependent tests can skip when those prerequisites are absent. CI installs its pinned tools before running the suite and checks that committed bundles match the build.
+
+Dependency updates that change bundled code also need rebuilt `dist/` files committed before merging; Dependabot does not generate them. Update the Pi SDK packages together and review their peer dependency ranges. Node.js type definitions stay on major 22 to match the minimum supported runtime.
 
 For maintainers, see [releasing pi-view](https://github.com/boonlai/pi-view/blob/main/docs/releasing.md) for the npm release process.
 

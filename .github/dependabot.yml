@@ -5,6 +5,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      pi-sdk:
+        patterns:
+          - "@earendil-works/pi-coding-agent"
+          - "@earendil-works/pi-tui"
+    ignore:
+      # Match the minimum supported Node.js major; upgrade it deliberately.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: /
