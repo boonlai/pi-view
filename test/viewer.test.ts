@@ -81,6 +81,40 @@ test("Viewer scrolls, searches, toggles line numbers, reloads changes and closes
   viewer.dispose();
 });
 
+test("Rendered Markdown supports Vim-style linewise selection and clipboard yank", async t => {
+  const { viewer, writes } = await setup(t, "copy.md", "# Heading\n\nFirst paragraph.\n\nSecond paragraph.\n");
+  await screen(viewer, value => value.includes("Heading"));
+  viewer.handleInput("j"); // choose a starting row before entering visual mode
+  viewer.handleInput("V");
+  viewer.handleInput("j");
+  const selected = stripVTControlCharacters(viewer.render(72).join("\n"));
+  assert.match(selected, /VISUAL LINE/);
+  viewer.handleInput("y");
+  const osc52 = writes.find(value => value.startsWith("\x1b]52;c;"));
+  assert.ok(osc52, "yank emits an OSC 52 clipboard sequence");
+  const encoded = osc52.match(/\x1b\]52;c;([^\x07]+)\x07/)?.[1];
+  assert.ok(encoded);
+  const copied = Buffer.from(encoded, "base64").toString("utf8");
+  assert.match(copied, /First paragraph/);
+  assert.doesNotMatch(copied, /Heading/);
+  assert.match(stripVTControlCharacters(viewer.render(72).at(-1)!), /Yanked/);
+});
+
+test("Ctrl-V selects and copies a rectangular Markdown block", async t => {
+  const { viewer, writes } = await setup(t, "block.md", "alpha bravo charlie delta echo foxtrot");
+  await screen(viewer, value => value.includes("alpha"), 12);
+  viewer.handleInput("\x16"); // Ctrl-V enters blockwise visual mode
+  viewer.handleInput("j");
+  viewer.handleInput("\x1b[C"); viewer.handleInput("\x1b[C");
+  assert.match(stripVTControlCharacters(viewer.render(12).join("\n")), /VISUAL BL/);
+  viewer.handleInput("y");
+  const osc52 = writes.find(value => value.startsWith("\x1b]52;c;"));
+  assert.ok(osc52);
+  const encoded = osc52.match(/\x1b\]52;c;([^\x07]+)\x07/)?.[1];
+  assert.ok(encoded);
+  assert.equal(Buffer.from(encoded, "base64").toString("utf8"), "alp\ncha");
+});
+
 test("Markdown fallback remains scrollable and source view preserves image markup", async t => {
   const { viewer } = await setup(t, "readme.md", "# Heading\n\nText before\n\n![example](missing.png)\n\nText after\n");
   await screen(viewer, value => value.includes("[missing.png]"));
