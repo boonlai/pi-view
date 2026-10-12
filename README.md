@@ -16,12 +16,16 @@ Press **Cmd+P on macOS, Ctrl+P on Windows, or Super+P on Linux** to open Quick O
 
 Use Quick Open to find session files, search text, and inspect images without leaving your agent. Previews refresh when files change. Optional Neovim support lets you edit text and Markdown in place.
 
-[![Quick Open showing path completion and a selected image file](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/quick-open.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/quick-open.png)
-
-Quick Open completes paths and opens files without leaving your session. Select a screenshot to view it at full size.
+[![Animated pi-view tour showing file navigation, Markdown, search, code editing, image controls, PDFs and text](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/showcase.gif)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/showcase.gif)
 
 <details>
 <summary>See Markdown, code, image, and PDF previews</summary>
+
+### Quick Open
+
+[![Quick Open showing path completion and a selected image file](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/quick-open.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/quick-open.png)
+
+Quick Open completes paths and opens files without leaving your session. Select a screenshot to view it at full size.
 
 ### Markdown
 

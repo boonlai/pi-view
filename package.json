@@ -26,6 +26,7 @@
     "dist"
   ],
   "pi": {
+    "image": "https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/showcase.gif",
     "extensions": [
       "./dist/index.js"
     ]
