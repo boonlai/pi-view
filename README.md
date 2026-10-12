@@ -16,7 +16,7 @@ Press **Cmd+P on macOS, Ctrl+P on Windows, or Super+P on Linux** to open Quick O
 
 Use Quick Open to find session files, search text, and inspect images without leaving your agent. Previews refresh when files change. Optional Neovim support lets you edit text and Markdown in place.
 
-[![Quick Open showing path completion and a selected image file](docs/assets/screenshots/quick-open.png)](docs/assets/screenshots/quick-open.png)
+[![Quick Open showing path completion and a selected image file](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/quick-open.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/quick-open.png)
 
 Quick Open completes paths and opens files without leaving your session. Select a screenshot to view it at full size.
 
@@ -25,19 +25,19 @@ Quick Open completes paths and opens files without leaving your session. Select 
 
 ### Markdown
 
-[![Rendered Markdown preview with headings, links, code blocks, and keyboard controls](docs/assets/screenshots/markdown.png)](docs/assets/screenshots/markdown.png)
+[![Rendered Markdown preview with headings, links, code blocks, and keyboard controls](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/markdown.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/markdown.png)
 
 ### Code
 
-[![TypeScript preview with syntax highlighting and source line numbers](docs/assets/screenshots/code.png)](docs/assets/screenshots/code.png)
+[![TypeScript preview with syntax highlighting and source line numbers](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/code.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/code.png)
 
 ### Images
 
-[![Image preview fitted to the terminal with zoom and pan controls](docs/assets/screenshots/image.png)](docs/assets/screenshots/image.png)
+[![Image preview fitted to the terminal with zoom and pan controls](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/image.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/image.png)
 
 ### PDFs
 
-[![PDF page preview with page count, zoom, and navigation controls](docs/assets/screenshots/pdf.png)](docs/assets/screenshots/pdf.png)
+[![PDF page preview with page count, zoom, and navigation controls](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/pdf.png)](https://raw.githubusercontent.com/boonlai/pi-view/main/docs/assets/screenshots/pdf.png)
 
 </details>
 
