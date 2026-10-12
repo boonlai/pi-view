@@ -201,7 +201,7 @@ Both hosts load the same extension bundle, with host-specific handling for overl
 | Component | Requirement or project target |
 | --- | --- |
 | Node.js | 22.19+; OMP's image worker needs a Node executable |
-| Pi | Declared SDK ranges: `>=0.85.1 <0.86.0` or `>=0.99.2 <0.100.0`; development SDK: 0.99.2 |
+| Pi | Declared SDK ranges: `>=0.85.1 <0.86.0`, `>=0.99.2 <0.100.0` or `>=1.0.0 <1.1.0`; development SDK: 1.0.0 |
 | Oh My Pi | CI runtime pin: 18.2.4 |
 | Operating systems | CI is configured for Linux, macOS, and Windows |
 | Terminal graphics | Depends on the host's detected protocol; text fallbacks are available |
