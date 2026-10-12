@@ -11,10 +11,11 @@ import { attachMouse, capabilities, createTerminalImage, type HostCapabilities, 
 import { NvimEditor, type NvimEditingSession } from "./nvim.ts";
 import { flushLineNumbersSave, queueLineNumbersSave, readLineNumbers } from "./settings.ts";
 
-type TextUnit = { content: string; spans: { row: number; start: number; end: number }[] };
+type TextUnit = { content: string; spans: { row: number; start: number; end: number; offset: number }[] };
 type LayoutBlock = { kind: "text"; lines: string[]; units?: TextUnit[] } | { kind: "image"; target: string; alt: string; rows: number };
 type SearchMatch = { row: number; endRow: number };
-type SearchState = { query: string; matches: SearchMatch[] };
+type SearchRange = { start: number; end: number };
+type SearchState = { query: string; matches: SearchMatch[]; highlights: Map<number, SearchRange[]> };
 type Frame = { abort: AbortController; component?: TerminalImage; retired?: TerminalImage; error?: string; rendered?: string; pending?: string };
 type LoadedImage = { image?: ImageSource; error?: string; promise?: Promise<ImageSource>; abort?: AbortController };
 
@@ -485,7 +486,7 @@ export class PreviewViewer implements Component {
         const start = plain.startsWith(visible, position) ? position
           : plain.startsWith(visible, position + 1) ? position + 1
           : Math.max(0, plain.indexOf(visible, position));
-        unit.spans.push({ row: rows.length, start, end: start + visible.length });
+        unit.spans.push({ row: rows.length, start, end: start + visible.length, offset: indent });
         rows.push((partIndex === 0 ? prefix : " ".repeat(indent)) + part);
         position = start + visible.length;
       }
@@ -550,7 +551,8 @@ export class PreviewViewer implements Component {
       open = undefined;
     };
     for (const [row, raw] of rows.entries()) {
-      const plain = stripVTControlCharacters(raw).trim();
+      const rendered = stripVTControlCharacters(raw);
+      const plain = rendered.trim();
       if (!plain) { flush(); continue; }
       while (unit < sourceUnits.length && position >= sourceUnits[unit].length) { unit++; position = 0; }
       const sourceText = sourceUnits[unit];
@@ -560,11 +562,11 @@ export class PreviewViewer implements Component {
         if (open && openUnit !== unit) flush();
         if (!open) { open = { content: "", spans: [] }; openUnit = unit; start = at; }
         end = at + piece.length;
-        open.spans.push({ row, start: at - start, end: end - start });
+        open.spans.push({ row, start: at - start, end: end - start, offset: rendered.indexOf(piece) });
         position = end;
       } else {
         flush();
-        units.push({ content: plain, spans: [{ row, start: 0, end: plain.length }] });
+        units.push({ content: plain, spans: [{ row, start: 0, end: plain.length, offset: rendered.indexOf(plain) }] });
       }
     }
     flush();
@@ -575,12 +577,13 @@ export class PreviewViewer implements Component {
     const layout = this.getLayout(this.width);
     if (!layout.search || layout.search.query !== this.query) {
       const matches: SearchMatch[] = [];
+      const highlights = new Map<number, SearchRange[]>();
       if (this.query.trim()) {
         const pattern = new RegExp(this.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
         let cursor = 0;
         for (const block of layout.blocks) {
           const units: TextUnit[] = block.kind === "image"
-            ? [{ content: `[${block.target}]`, spans: [{ row: 0, start: 0, end: block.target.length + 2 }] }]
+            ? [{ content: `[${block.target}]`, spans: [{ row: 0, start: 0, end: block.target.length + 2, offset: 0 }] }]
             : block.units ?? [];
           for (const unit of units) {
             let first = 0;
@@ -592,8 +595,17 @@ export class PreviewViewer implements Component {
               while (last + 1 < unit.spans.length && unit.spans[last + 1].start < end) last++;
               const row = cursor + unit.spans[first].row;
               const endRow = cursor + unit.spans[last].row;
-              // Navigation/highlighting are row-based; repeated hits on the same
-              // visible range need neither another allocation nor another stop.
+              for (let index = first; index <= last; index++) {
+                const span = unit.spans[index];
+                const ranges = highlights.get(cursor + span.row) ?? [];
+                ranges.push({
+                  start: span.offset + Math.max(hit.index, span.start) - span.start,
+                  end: span.offset + Math.min(end, span.end) - span.start,
+                });
+                highlights.set(cursor + span.row, ranges);
+              }
+
+              // Keep navigation row-based, but retain every occurrence for highlighting.
               const previous = matches.at(-1);
               if (!previous || previous.row !== row || previous.endRow !== endRow) matches.push({ row, endRow });
             }
@@ -601,9 +613,44 @@ export class PreviewViewer implements Component {
           cursor += block.kind === "text" ? block.lines.length : block.rows;
         }
       }
-      layout.search = { query: this.query, matches };
+      layout.search = { query: this.query, matches, highlights };
     }
     return layout.search;
+  }
+
+  private highlightMatches(line: string, ranges: SearchRange[] | undefined): string {
+    if (!ranges?.length) {
+      return line;
+    }
+
+    const plain = stripVTControlCharacters(line);
+    const highlight = "\x1b[0;30;103m";
+    let result = "";
+    let column = 0;
+    let position = 0;
+    let measuredColumn = 0;
+    const viewportStart = this.wrap ? 0 : this.horizontal;
+    for (const range of ranges) {
+      const start = measuredColumn + visibleWidth(plain.slice(position, range.start));
+      const end = start + visibleWidth(plain.slice(range.start, range.end));
+      position = range.end;
+      measuredColumn = end;
+      if (start >= viewportStart + this.width) {
+        break;
+      }
+
+      if (end <= viewportStart) {
+        continue;
+      }
+
+      result += sliceByColumn(line, column, start - column) + "\x1b[0m";
+      const match = sliceByColumn(line, start, end - start);
+      // Keep black-on-bright-yellow contrast even across syntax and Markdown resets.
+      result += highlight + match.replace(/\x1b\[[0-9;:]*m/g, code => code + highlight) + "\x1b[0m";
+      column = end;
+    }
+
+    return result + sliceByColumn(line, column, Math.max(0, visibleWidth(line) - column));
   }
 
   private findMatch(direction: number, includeCurrent = false): void {
@@ -772,12 +819,7 @@ export class PreviewViewer implements Component {
       const { blocks } = this.getLayout(width);
       this.totalRows = blocks.reduce((sum, block) => sum + (block.kind === "text" ? block.lines.length : block.rows), 0);
       this.offset = Math.max(0, Math.min(Math.max(0, this.totalRows - this.bodyHeight), this.offset));
-      const highlighted = new Set<number>();
-      if (this.query) {
-        for (const match of this.searchState().matches) {
-          for (let row = match.row; row <= match.endRow; row++) highlighted.add(row);
-        }
-      }
+      const highlights = this.query ? this.searchState().highlights : undefined;
       let cursor = 0;
       for (const block of blocks) {
         const count = block.kind === "text" ? block.lines.length : block.rows;
@@ -789,9 +831,8 @@ export class PreviewViewer implements Component {
             body.push(...this.imageLines(block.target, width, count, start, end - start, false, used));
           } else {
             body.push(...block.lines.slice(start, end).map((line, i) => {
-              let shown = this.wrap ? truncateToWidth(line, width, "") : sliceByColumn(line, this.horizontal, width);
-              if (highlighted.has(cursor + start + i)) shown = this.theme.bg("selectedBg", shown);
-              return shown;
+              const highlighted = this.highlightMatches(line, highlights?.get(cursor + start + i));
+              return this.wrap ? truncateToWidth(highlighted, width, "") : sliceByColumn(highlighted, this.horizontal, width);
             }));
           }
         }
