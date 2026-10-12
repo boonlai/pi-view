@@ -63,6 +63,74 @@ function type(viewer: PreviewViewer, value: string): void {
   viewer.handleInput("\r");
 }
 
+function highlightedText(viewer: PreviewViewer, width = 72): string[] {
+  return viewer.render(width).slice(2, -2).map(line => {
+    let active = false;
+    let text = "";
+    for (const token of line.match(/\x1b\[[0-9;:]*m|[^\x1b]+/g) ?? []) {
+      if (token === "\x1b[0;30;103m") {
+        active = true;
+      } else if (/^\x1b\[(?:0|49)?m$/.test(token)) {
+        active = false;
+      } else if (!token.startsWith("\x1b") && active) {
+        text += token;
+      }
+    }
+
+    return text;
+  }).filter(Boolean);
+}
+
+test("Search highlights every literal occurrence, not surrounding text or line numbers", async t => {
+  const { viewer } = await setup(t, "matches.txt", "before Needle between needle after\nother needle row\n");
+  await screen(viewer, value => value.includes("before"));
+  viewer.handleInput("l");
+  viewer.handleInput("/"); type(viewer, "needle");
+  assert.deepEqual(highlightedText(viewer), ["Needleneedle", "needle"]);
+  viewer.handleInput("n");
+  assert.deepEqual(highlightedText(viewer), ["Needleneedle", "needle"]);
+  viewer.handleInput("/"); viewer.handleInput("\x15"); type(viewer, "absent");
+  assert.deepEqual(highlightedText(viewer), []);
+  viewer.handleInput("/"); viewer.handleInput("\x15"); type(viewer, "");
+  assert.deepEqual(highlightedText(viewer), []);
+});
+
+test("Search highlight survives syntax colours, wrapping, resizing and horizontal scrolling", async t => {
+  const { viewer } = await setup(t, "matches.ts", "const fileName = computeName(file);\n");
+  await screen(viewer, value => value.includes("computeName"));
+  viewer.handleInput("l");
+  viewer.handleInput("/"); type(viewer, "const filename");
+  assert.equal(highlightedText(viewer).join(""), "const fileName");
+  assert.equal(highlightedText(viewer, 12).join("").replace(/ /g, ""), "constfileName");
+  assert.equal(highlightedText(viewer, 72).join(""), "const fileName");
+  viewer.handleInput("w");
+  viewer.handleInput("\x1b[C");
+  assert.ok(highlightedText(viewer, 20).join("").includes("fileName"));
+  for (const row of viewer.render(20)) {
+    assert.ok(visibleWidth(row) <= 20);
+  }
+});
+
+test("Markdown search highlights wrapped phrases without list or quote decorations", async t => {
+  const { viewer } = await setup(t, "matches.md", "> hello **world** tail\n\n- hello world tail\n");
+  await screen(viewer, value => value.includes("hello"));
+  viewer.handleInput("/"); type(viewer, "hello world");
+  assert.deepEqual(highlightedText(viewer), ["hello world", "hello world"]);
+  assert.equal(highlightedText(viewer, 12).join("").replace(/ /g, ""), "helloworldhelloworld");
+  viewer.handleInput("s");
+  assert.deepEqual(highlightedText(viewer, 72), ["hello world"]);
+});
+
+test("Search highlights Unicode text at its original character positions", async t => {
+  const { viewer } = await setup(t, "matches.txt", "İ 界🙂 e\u0301 Needle 界🙂 tail\n");
+  await screen(viewer, value => value.includes("Needle"));
+  for (const [query, expected] of [["needle", "Needle"], ["界🙂", "界🙂界🙂"], ["e\u0301", "e\u0301"]]) {
+    viewer.handleInput("/"); viewer.handleInput("\x15"); type(viewer, query);
+    assert.equal(highlightedText(viewer).join(""), expected);
+    assert.match(stripVTControlCharacters(viewer.render(72).join("\n")), /İ 界🙂 e\u0301 Needle 界🙂 tail/);
+  }
+});
+
 test("Viewer scrolls, searches, toggles line numbers, reloads changes and closes cleanly", async t => {
   const { viewer, path, listeners, closes } = await setup(t, "code.ts", Array.from({ length: 90 }, (_, i) => `const line${i + 1} = ${i + 1};`).join("\n"));
   await screen(viewer, value => value.includes("const line1"));

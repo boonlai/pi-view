@@ -139,6 +139,8 @@ Press `?` in a preview for help. These controls apply to previews, not an active
 
 The wheel scrolls text or turns PDF pages; it never zooms. In PDF text view, the wheel and `PgUp` / `PgDn` scroll text. Line numbers apply to text/code and Markdown source, not rendered Markdown or extracted PDF text.
 
+Search is case-insensitive and highlights each matching passage in black on bright yellow, including across wrapped lines. Press `/`, enter a query, then `Enter`; use `n` / `N` to move between matching rows. Submit an empty query to clear the highlights.
+
 ## Optional support
 
 Install only the tools for the features you want. After installing tools or changing `PATH`, open a new terminal and restart your agent.
